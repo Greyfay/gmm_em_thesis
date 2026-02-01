@@ -48,11 +48,9 @@ def _check_cov_type(cov_type: str) -> None:
     if cov_type not in ("spherical", "diag", "tied", "full"):
         raise ValueError(f"Unknown covariance_type={cov_type!r}")
 
-
 def _nk_eps(dtype: torch.dtype) -> float:
     """Match sklearn's nk smoothing: 10 * machine epsilon for dtype."""
     return float(10.0 * torch.finfo(dtype).eps)
-
 
 def _safe_log(x: torch.Tensor) -> torch.Tensor:
     tiny = torch.finfo(x.dtype).tiny
@@ -470,6 +468,8 @@ class TorchGaussianMixture:
             X = X.to(self.dtype)
         return X
 
+    # don't really get this
+
     def _n_parameters(self, D: int) -> int:
         """Parameter count like sklearn for AIC/BIC."""
         K = self.n_components
@@ -529,6 +529,7 @@ class TorchGaussianMixture:
         K = self.n_components
         N, D = X.shape
 
+        # start with dummy parameters
         means0 = torch.zeros((K, D), device=X.device, dtype=X.dtype)
         if self.covariance_type == "diag":
             cov0 = torch.ones((K, D), device=X.device, dtype=X.dtype)
@@ -540,6 +541,7 @@ class TorchGaussianMixture:
             cov0 = torch.stack([torch.eye(D, device=X.device, dtype=X.dtype) for _ in range(K)], dim=0)
         weights0 = torch.full((K,), 1.0 / K, device=X.device, dtype=X.dtype)
 
+        # Run one M-step to get real initial parameters
         means, cov, weights = _maximization_step(
             X,
             means0,

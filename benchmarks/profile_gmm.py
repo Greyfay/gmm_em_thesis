@@ -12,14 +12,16 @@ from implementation._torch_gmm_em import TorchGaussianMixture
 
 def profile_fit(n_samples=10000, n_features=50, n_components=5, cov_type="full"):
     """Profile a single fit() call."""
-    X = torch.randn(n_samples, n_features, device="cuda", dtype=torch.float64)
+    X = torch.randn(n_samples, n_features, device="cuda", dtype=torch.float32)
     
     gmm = TorchGaussianMixture(
         n_components=n_components,
         covariance_type=cov_type,
         max_iter=10,
         n_init=1,
+        init_params="random",
         device="cuda",
+        dtype=torch.float32,
     )
 
     # Warmup
