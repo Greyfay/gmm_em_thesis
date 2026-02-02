@@ -12,50 +12,84 @@ PATTERNS = [
     ("matmul_gemm", [
         r"\bgemm\b", r"cublas", r"cutlass", r"mma", r"mm\b", r"bmm\b",
         r"addmm", r"matmul", r"aten::mm", r"aten::bmm", r"aten::matmul",
+        r"sgemm", r"volta_.*gemm",
     ], "MatMul / GEMM (linear algebra)"),
+
     ("tensor_create_init", [
-    r"aten::zeros\b", r"aten::ones\b", r"aten::empty\b", r"aten::empty_strided\b",
-    r"aten::full\b", r"aten::ones_like\b", r"aten::arange\b",
-], "Tensor creation / init"),
+        r"aten::zeros\b", r"aten::ones\b", r"aten::empty\b", r"aten::empty_strided\b",
+        r"aten::full\b", r"aten::ones_like\b", r"aten::arange\b",
+        r"aten::empty_like\b", r"aten::eye\b",
+    ], "Tensor creation / init"),
+
     ("distance", [
-    r"aten::cdist\b",
-    r"aten::_euclidean_dist\b",
-], "Distance computation"),
+        r"aten::cdist\b", r"aten::_euclidean_dist\b",
+    ], "Distance computation"),
 
-    ("gemm", [
-        r"sgemm",
-        r"volta_.*gemm",
-        r"cublas",
-        r"cutlass",
-    ], "Matrix multiplication (GEMM)"),
+    ("controlflow_sync", [
+        r"aten::is_nonzero\b",
+    ], "CPU–GPU sync / control-flow"),
 
-    ("concat", [
-        r"aten::cat\b",
-    ], "Tensor concatenation"),
+    ("triangular_ops", [
+        r"aten::tril_\b", r"triu_tril_kernel",
+    ], "Triangular ops (tril/triu)"),
+
+    ("linalg_cholesky_info", [
+        r"xxtrf4_set_info_ker",
+    ], "Linear algebra: Cholesky (info/status)"),
+
+    ("linalg_cholesky", [
+        r"aten::linalg_cholesky\b", r"aten::linalg_cholesky_ex\b",
+    ], "Linear algebra: Cholesky"),
+
+    ("linalg_triangular_solve", [
+        r"aten::linalg_solve_triangular\b",
+    ], "Linear algebra: triangular solve"),
+
+    ("linalg_checks", [
+        r"aten::_linalg_check_errors\b",
+    ], "Linear algebra: checks"),
+
+    ("concat_stack", [
+        r"aten::stack\b", r"aten::cat\b",
+    ], "Tensor concatenation / stacking"),
+
+    ("diag_extract", [
+        r"aten::diagonal\b",
+    ], "View/Indexing (diagonal)"),
+
+    ("reduce_minmax_arg", [
+        r"aten::argmin\b", r"aten::argmax\b",
+        r"aten::max\b", r"aten::min\b",
+    ], "Reduction (min/max/argmin/argmax)"),
+
+    ("memory_allocator", [
+        r"^\[memory\]$",
+    ], "Memory / allocator overhead"),
 
     ("mask_index", [
         r"aten::nonzero\b",
     ], "Masking / indexing"),
+
+    ("mask_index_compaction", [
+        r"cub::DeviceCompactInitKernel", r"DeviceCompactInitKernel",
+    ], "Masking / indexing (CUB compaction)"),
 
     ("bool_reduce", [
         r"aten::any\b",
     ], "Reduction (boolean)"),
 
     ("compare_mask", [
-        r"aten::eq\b",
-    ], "Comparisons / masking"),
-    ("mask_index_compaction", [
-    r"cub::DeviceCompactInitKernel",
-    r"DeviceCompactInitKernel",
-], "Masking / indexing (CUB compaction)"),
+        r"aten::eq\b", r"aten::lt\b", r"aten::le\b", r"aten::gt\b", r"aten::ge\b",
+        r"aten::bitwise_and\b", r"aten::bitwise_not\b",
+    ], "Comparisons / Masking"),
 
     ("debug_assert", [
-        r"_assert_async_cuda_kernel",
-        r"aten::_assert_async\b",
+        r"_assert_async_cuda_kernel", r"aten::_assert_async\b",
     ], "Debug / assert overhead"),
 
     ("cuda_runtime", [
-        r"cudaPeekAtLastError",
+        r"cudaPeekAtLastError", r"cudaoccupancy", r"cudapeekatenderror",
+        r"cudadevicegetattribute",
     ], "CUDA runtime / launch overhead"),
 
     ("elementwise_log", [
@@ -70,28 +104,17 @@ PATTERNS = [
         r"aten::reciprocal\b",
     ], "Elementwise math (reciprocal)"),
 
-
     ("cpu_gpu_sync", [
-        r"aten::item\b",
-        r"aten::_local_scalar_dense\b",
-    ], "CPU_GPU synchronization"),
-
+        r"aten::item\b", r"aten::_local_scalar_dense\b",
+    ], "CPU–GPU synchronization"),
 
     ("fill_reset", [
         r"aten::fill_\b", r"aten::zero_\b",
     ], "Fill / Reset (in-place)"),
 
-    ("compare_mask", [
-        r"aten::lt\b", r"aten::le\b", r"aten::gt\b", r"aten::ge\b",
-        r"aten::bitwise_and\b", r"aten::bitwise_not\b",
-    ], "Comparisons / Masking"),
-
-    ("reduce_minmax_arg", [
-        r"aten::max\b", r"aten::min\b", r"aten::argmax\b",
-    ], "Reduction (min/max/argmax)"),
-
     ("rng", [
-        r"aten::exponential_\b",
+        r"aten::exponential_\b", r"philox", r"random", r"curand",
+        r"rand\b", r"dropout",
     ], "Random number generation"),
 
     ("view_stride_index", [
@@ -108,14 +131,9 @@ PATTERNS = [
         r"activity buffer request", r"buffer flush",
     ], "Profiler overhead"),
 
-    ("cuda_runtime", [
-        r"cudaoccupancy", r"cudapeekatenderror", r"cudadevicegetattribute",
-    ], "CUDA runtime / launch overhead"),
-
     ("type_numeric_util", [
         r"aten::real\b",
     ], "Type / numeric utility"),
-
 
     ("reduce", [
         r"reduce_kernel", r"reduce", r"cub::DeviceReduce", r"block_reduce",
@@ -125,10 +143,6 @@ PATTERNS = [
     ("softmax_logsumexp", [
         r"logsumexp", r"softmax", r"log_softmax",
     ], "Softmax / LogSumExp"),
-
-    ("exp_log", [
-        r"\bexp\b", r"\blog\b", r"log1p", r"expm1",
-    ], "Exp / Log"),
 
     ("elementwise", [
         r"elementwise", r"TensorIterator", r"pointwise", r"vectorized_elementwise",
@@ -140,30 +154,26 @@ PATTERNS = [
     ], "Elementwise ops (add/mul/div/…)"),
 
     ("broadcast_index", [
-        r"index", r"gather", r"scatter", r"take", r"select",
+        r"\bindex\b", r"gather", r"scatter", r"\btake\b", r"select",
         r"masked", r"advanced_index", r"index_select",
     ], "Indexing / Gather / Scatter"),
 
     ("transpose_view_reshape", [
-        r"transpose", r"permute", r"view", r"reshape", r"contiguous",
+        r"transpose", r"permute", r"\bview\b", r"reshape", r"contiguous",
         r"as_strided", r"flatten", r"squeeze", r"unsqueeze",
     ], "View/Reshape/Transpose/Contiguous"),
 
     ("norm_stats", [
-        r"var", r"variance", r"std", r"norm", r"layer_norm", r"batch_norm",
+        r"\bvar\b", r"variance", r"\bstd\b", r"\bnorm\b", r"layer_norm", r"batch_norm",
     ], "Norm / Statistics"),
 
-    ("rng", [
-        r"philox", r"random", r"curand", r"rand", r"dropout",
-    ], "Random number generation"),
-
     ("memory_copy", [
-        r"memcpy", r"memset", r"copy", r"dtoh", r"htod", r"cudaMemcpy",
+        r"memcpy", r"memset", r"\bcopy\b", r"dtoh", r"htod", r"cudaMemcpy",
         r"aten::copy_", r"aten::to", r"pin_memory",
     ], "Memory copy / Transfers"),
 
     ("alloc_free", [
-        r"malloc", r"free", r"alloc", r"cudaMalloc", r"cudaFree",
+        r"malloc", r"\bfree\b", r"alloc", r"cudaMalloc", r"cudaFree",
         r"caching_allocator", r"empty_cache",
     ], "Allocation / Free"),
 
@@ -171,6 +181,10 @@ PATTERNS = [
         r"cudaLaunchKernel", r"cudaDeviceSynchronize", r"synchronize",
         r"cudaGetLastError", r"cudaStream", r"cudaEvent",
     ], "Kernel launch / Sync / Runtime"),
+
+    ("cuda_unspecified_kernel", [
+        r"cuda_kernel", r"kernel",
+    ], "CUDA kernel (unspecified/fused)"),
 ]
 
 def classify(name: str):
