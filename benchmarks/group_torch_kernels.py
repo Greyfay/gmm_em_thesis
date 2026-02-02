@@ -13,6 +13,50 @@ PATTERNS = [
         r"\bgemm\b", r"cublas", r"cutlass", r"mma", r"mm\b", r"bmm\b",
         r"addmm", r"matmul", r"aten::mm", r"aten::bmm", r"aten::matmul",
     ], "MatMul / GEMM (linear algebra)"),
+    ("tensor_create_init", [
+    r"aten::zeros\b", r"aten::ones\b", r"aten::empty\b", r"aten::empty_strided\b",
+    r"aten::full\b", r"aten::ones_like\b", r"aten::arange\b",
+], "Tensor creation / init"),
+
+    ("fill_reset", [
+        r"aten::fill_\b", r"aten::zero_\b",
+    ], "Fill / Reset (in-place)"),
+
+    ("compare_mask", [
+        r"aten::lt\b", r"aten::le\b", r"aten::gt\b", r"aten::ge\b",
+        r"aten::bitwise_and\b", r"aten::bitwise_not\b",
+    ], "Comparisons / Masking"),
+
+    ("reduce_minmax_arg", [
+        r"aten::max\b", r"aten::min\b", r"aten::argmax\b",
+    ], "Reduction (min/max/argmax)"),
+
+    ("rng", [
+        r"aten::exponential_\b",
+    ], "Random number generation"),
+
+    ("view_stride_index", [
+        r"aten::expand\b", r"aten::t\b", r"aten::mt\b", r"aten::numpy_t\b",
+        r"aten::slice\b",
+    ], "View/Stride/Indexing"),
+
+    ("autograd_meta", [
+        r"aten::detach_\b", r"\bdetach_\b", r"aten::lift_fresh\b",
+        r"aten::result_type\b", r"aten::resize_\b", r"aten::set_\b",
+    ], "Autograd / metadata / bookkeeping"),
+
+    ("profiler_overhead", [
+        r"activity buffer request", r"buffer flush",
+    ], "Profiler overhead"),
+
+    ("cuda_runtime", [
+        r"cudaoccupancy", r"cudapeekatenderror", r"cudadevicegetattribute",
+    ], "CUDA runtime / launch overhead"),
+
+    ("type_numeric_util", [
+        r"aten::real\b",
+    ], "Type / numeric utility"),
+
 
     ("reduce", [
         r"reduce_kernel", r"reduce", r"cub::DeviceReduce", r"block_reduce",
