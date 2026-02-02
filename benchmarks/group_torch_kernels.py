@@ -44,6 +44,32 @@ PATTERNS = [
     ("compare_mask", [
         r"aten::eq\b",
     ], "Comparisons / masking"),
+    ("mask_index_compaction", [
+    r"cub::DeviceCompactInitKernel",
+    r"DeviceCompactInitKernel",
+], "Masking / indexing (CUB compaction)"),
+
+    ("debug_assert", [
+        r"_assert_async_cuda_kernel",
+        r"aten::_assert_async\b",
+    ], "Debug / assert overhead"),
+
+    ("cuda_runtime", [
+        r"cudaPeekAtLastError",
+    ], "CUDA runtime / launch overhead"),
+
+    ("elementwise_log", [
+        r"aten::log_\b",
+    ], "Elementwise math (log)"),
+
+    ("elementwise_exp", [
+        r"aten::exp_\b",
+    ], "Elementwise math (exp)"),
+
+    ("elementwise_reciprocal", [
+        r"aten::reciprocal\b",
+    ], "Elementwise math (reciprocal)"),
+
 
     ("cpu_gpu_sync", [
         r"aten::item\b",
