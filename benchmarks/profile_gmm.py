@@ -17,27 +17,58 @@ OUTDIR.mkdir(exist_ok=True)
 TRACEDIR = Path("results/profiles")
 TRACEDIR.mkdir(parents=True, exist_ok=True)
 
-def prof_to_df(prof) -> pd.DataFrame:
-    # key_averages() returns an EventList of FunctionEventAvg
+def prof_to_df(prof):
     events = prof.key_averages()
     rows = []
+
     for e in events:
+        # CPU times are stable
+        cpu_total = getattr(e, "cpu_time_total", None)
+        cpu_avg   = getattr(e, "cpu_time", None)  # avg per call (us)
+        self_cpu  = getattr(e, "self_cpu_time_total", None)
+
+        # GPU/device times vary by torch version:
+        # try CUDA-specific, else device-generic
+        cuda_total = getattr(e, "cuda_time_total", None)
+        cuda_avg   = getattr(e, "cuda_time", None)
+        self_cuda  = getattr(e, "self_cuda_time_total", None)
+
+        device_total = getattr(e, "device_time_total", None)
+        device_avg   = getattr(e, "device_time", None)
+        self_device  = getattr(e, "self_device_time_total", None)
+
+        # Prefer CUDA fields if present; otherwise use device fields
+        gpu_total = cuda_total if cuda_total is not None else device_total
+        gpu_avg   = cuda_avg   if cuda_avg   is not None else device_avg
+        self_gpu  = self_cuda  if self_cuda  is not None else self_device
+
         rows.append({
             "name": e.key,
-            "calls": e.count,
-            "cpu_time_total_us": e.cpu_time_total,
-            "cpu_time_avg_us": e.cpu_time,           # average per call (us)
-            "cuda_time_total_us": e.cuda_time_total,
-            "cuda_time_avg_us": e.cuda_time,         # average per call (us)
-            "self_cpu_time_total_us": e.self_cpu_time_total,
-            "self_cuda_time_total_us": getattr(e, "self_cuda_time_total", None),
+            "calls": getattr(e, "count", None),
+
+            "cpu_time_total_us": cpu_total,
+            "cpu_time_avg_us": cpu_avg,
+            "self_cpu_time_total_us": self_cpu,
+
+            # keep both, but "gpu_*" is the unified one you’ll sort by
+            "gpu_time_total_us": gpu_total,
+            "gpu_time_avg_us": gpu_avg,
+            "self_gpu_time_total_us": self_gpu,
+
+            # Optional memory fields (also version-dependent)
             "cpu_memory_usage_bytes": getattr(e, "cpu_memory_usage", None),
             "cuda_memory_usage_bytes": getattr(e, "cuda_memory_usage", None),
             "input_shapes": str(getattr(e, "input_shapes", "")),
         })
+
+    import pandas as pd
     df = pd.DataFrame(rows)
-    df = df.sort_values("cuda_time_total_us", ascending=False).reset_index(drop=True)
+
+    # Sort by whatever we actually have
+    sort_col = "gpu_time_total_us" if df["gpu_time_total_us"].notna().any() else "cpu_time_total_us"
+    df = df.sort_values(sort_col, ascending=False).reset_index(drop=True)
     return df
+
 
 def profile_fit(n_samples=10000, n_features=50, n_components=5, cov_type="full"):
     """Profile a single fit() call."""
