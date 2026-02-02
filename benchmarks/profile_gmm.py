@@ -17,11 +17,12 @@ def profile_fit(n_samples=10000, n_features=50, n_components=5, cov_type="full")
     gmm = TorchGaussianMixture(
         n_components=n_components,
         covariance_type=cov_type,
-        max_iter=10,
-        n_init=1,
-        init_params="random",
+        max_iter=50,
+        n_init=10,
+        init_params="kmeans",
         device="cuda",
         dtype=torch.float32,
+        random_state=42,
     )
 
     # Warmup
