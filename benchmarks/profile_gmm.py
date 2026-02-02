@@ -2,6 +2,7 @@
 
 import sys
 import os
+import time
 from pathlib import Path
 import torch
 import pandas as pd
@@ -90,14 +91,21 @@ def profile_fit(n_samples=10000, n_features=50, n_components=5, cov_type="full")
     trace_path = TRACEDIR / cov_type
     trace_path.mkdir(parents=True, exist_ok=True)
 
+    torch.cuda.synchronize()
+    t0 = time.perf_counter()
+
     with profile(
         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-        record_shapes=True,
-        profile_memory=True,
-        with_stack=True,
-        on_trace_ready=tensorboard_trace_handler(str(trace_path)),
+        record_shapes=False,
+        profile_memory=False,
+        with_stack=False,
+        # on_trace_ready=tensorboard_trace_handler(str(trace_path)),
     ) as prof:
         gmm.fit(X)
+
+    torch.cuda.synchronize()
+    t1 = time.perf_counter()
+    print("WALL time for fit:", t1 - t0, "s")
 
     tag = f"torch_{cov_type}_N{n_samples}_D{n_features}_K{n_components}"
     out_csv = OUTDIR / f"{tag}.csv"
