@@ -17,6 +17,39 @@ PATTERNS = [
     r"aten::zeros\b", r"aten::ones\b", r"aten::empty\b", r"aten::empty_strided\b",
     r"aten::full\b", r"aten::ones_like\b", r"aten::arange\b",
 ], "Tensor creation / init"),
+    ("distance", [
+    r"aten::cdist\b",
+    r"aten::_euclidean_dist\b",
+], "Distance computation"),
+
+    ("gemm", [
+        r"sgemm",
+        r"volta_.*gemm",
+        r"cublas",
+        r"cutlass",
+    ], "Matrix multiplication (GEMM)"),
+
+    ("concat", [
+        r"aten::cat\b",
+    ], "Tensor concatenation"),
+
+    ("mask_index", [
+        r"aten::nonzero\b",
+    ], "Masking / indexing"),
+
+    ("bool_reduce", [
+        r"aten::any\b",
+    ], "Reduction (boolean)"),
+
+    ("compare_mask", [
+        r"aten::eq\b",
+    ], "Comparisons / masking"),
+
+    ("cpu_gpu_sync", [
+        r"aten::item\b",
+        r"aten::_local_scalar_dense\b",
+    ], "CPU_GPU synchronization"),
+
 
     ("fill_reset", [
         r"aten::fill_\b", r"aten::zero_\b",
