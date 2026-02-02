@@ -22,7 +22,6 @@ def profile_fit(n_samples=10000, n_features=50, n_components=5, cov_type="full")
         init_params="kmeans",
         device="cuda",
         dtype=torch.float32,
-        random_state=42,
     )
 
     # Warmup

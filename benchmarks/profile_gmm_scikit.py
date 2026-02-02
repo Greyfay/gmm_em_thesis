@@ -24,7 +24,7 @@ def profile_fit(n_samples=10000, n_features=50, n_components=5, cov_type="full")
         max_iter=50,
         n_init=10,
         init_params="kmeans",
-        random_state=42,    
+        random_state=42,   
     )
 
     # Warmup
