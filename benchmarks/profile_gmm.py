@@ -13,6 +13,7 @@ Fixes applied:
 import os
 import sys
 import time
+import json
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -29,6 +30,9 @@ OUTDIR.mkdir(exist_ok=True)
 
 TRACEDIR = Path("results/profiles")
 TRACEDIR.mkdir(parents=True, exist_ok=True)
+
+# Track baseline times for comparison export
+BASELINE_TIMES = {}
 
 
 def _pick_sort_key_for_table() -> str:
@@ -151,6 +155,8 @@ def profile_fit(
     if measure_baseline:
         baseline_s = _wall_time_fit(gmm, X)
         print(f"[baseline] cov={cov_type:9s} wall={baseline_s:.6f} s (no profiler)")
+        # Store for later export
+        BASELINE_TIMES[cov_type] = baseline_s
 
     # Profiler config
     activities = [ProfilerActivity.CPU]
@@ -215,6 +221,12 @@ if __name__ == "__main__":
             enable_trace=False,     # keep False for speed and realistic timings
             measure_baseline=True,  # useful for thesis runtime plots
         )
+
+    # Export baseline times for comparison
+    baseline_path = OUTDIR / "torch_baselines.json"
+    with open(baseline_path, "w") as f:
+        json.dump(BASELINE_TIMES, f, indent=2)
+    print(f"\nExported baseline times to: {baseline_path}")
 
     # If you ever want a deep trace for one small run, do something like:
     # profile_fit(cov_type="full", n_samples=2000, n_features=20, n_components=5,

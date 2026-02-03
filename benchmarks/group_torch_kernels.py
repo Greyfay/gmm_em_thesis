@@ -1,9 +1,11 @@
 from pathlib import Path
 import re
+import json
 import pandas as pd
 
 IN_XLSX  = Path("profiles/profile_tables.xlsx")
 OUT_XLSX = Path("profiles/profile_tables_grouped.xlsx")
+BASELINE_FILE = Path("profiles/torch_baselines.json")
 
 # Ordered patterns: first match wins.
 # You can extend this list as you see new kernel names.
@@ -219,12 +221,37 @@ def pick_time_column(df: pd.DataFrame) -> str:
             return c
     raise KeyError("No time column found")
 
+def load_baselines() -> dict:
+    """Load torch baseline times from JSON, if available."""
+    if BASELINE_FILE.exists():
+        with open(BASELINE_FILE) as f:
+            return json.load(f)
+    return {}
+
 def main():
     if not IN_XLSX.exists():
         raise SystemExit(f"Missing {IN_XLSX}")
 
     xls = pd.ExcelFile(IN_XLSX)
     sheet_names = xls.sheet_names
+
+    # Load baseline times and totals from summaries
+    torch_baselines = load_baselines()
+    sklearn_totals = {}
+    torch_gpu_totals = {}
+
+    # Try to read summary sheets from IN_XLSX
+    try:
+        sklearn_sum_df = pd.read_excel(IN_XLSX, sheet_name="sklearn_totals")
+        sklearn_totals = dict(zip(sklearn_sum_df["covariance_type"], sklearn_sum_df["total_cumtime_s"]))
+    except Exception:
+        pass
+
+    try:
+        torch_sum_df = pd.read_excel(IN_XLSX, sheet_name="torch_totals")
+        torch_gpu_totals = dict(zip(torch_sum_df["covariance_type"], torch_sum_df["total_gpu_time_s"]))
+    except Exception:
+        pass
 
     with pd.ExcelWriter(OUT_XLSX, engine="openpyxl") as w:
         index_rows = []
@@ -279,6 +306,27 @@ def main():
             sum_sheet = sh[:28] + "_sum"
             summary.to_excel(w, sheet_name=sum_sheet[:31], index=False)
             index_rows.append({"sheet": sum_sheet[:31], "type": "torch_summary", "source": sh})
+
+        # Create comparison sheet with sklearn vs pytorch baseline times
+        comparison_rows = []
+        for cov_type in sorted(set(sklearn_totals.keys()) | set(torch_baselines.keys())):
+            sklearn_t = sklearn_totals.get(cov_type, None)
+            torch_t = torch_baselines.get(cov_type, None)
+            speedup = None
+            if sklearn_t is not None and torch_t is not None and torch_t > 0:
+                speedup = sklearn_t / torch_t
+
+            comparison_rows.append({
+                "covariance_type": cov_type,
+                "sklearn_time_s": sklearn_t,
+                "torch_baseline_s": torch_t,
+                "speedup_ratio": speedup,
+            })
+
+        if comparison_rows:
+            comparison_df = pd.DataFrame(comparison_rows)
+            comparison_df.to_excel(w, sheet_name="COMPARISON", index=False)
+            index_rows.append({"sheet": "COMPARISON", "type": "comparison"})
 
         pd.DataFrame(index_rows).to_excel(w, sheet_name="INDEX", index=False)
 

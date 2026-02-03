@@ -26,6 +26,12 @@ def pstats_to_df(pstats_file: Path) -> pd.DataFrame:
     df = pd.DataFrame(rows).sort_values("cumtime_s", ascending=False).reset_index(drop=True)
     return df
 
+def get_sklearn_total_time(df: pd.DataFrame) -> float:
+    """Extract total cumulative time from sklearn pstats DataFrame."""
+    if "cumtime_s" in df.columns:
+        return float(df["cumtime_s"].sum())
+    return 0.0
+
 def main():
     if not PROF_DIR.exists():
         raise SystemExit("No ./profiles directory found")
@@ -38,6 +44,9 @@ def main():
 
     out_xlsx = PROF_DIR / "profile_tables.xlsx"
 
+    sklearn_totals = {}
+    torch_totals = {}
+
     with pd.ExcelWriter(out_xlsx, engine="openpyxl") as w:
         index_rows = []
 
@@ -47,6 +56,9 @@ def main():
             sheet = safe_sheet_name(psfile.stem)
             df.to_excel(w, sheet_name=sheet, index=False)
             index_rows.append({"sheet": sheet, "source": "pstats", "file": psfile.name})
+            # Extract cov_type from filename (e.g., sklearn_diag_N10000_D50_K5 -> diag)
+            cov_type = psfile.stem.split("_")[1]  # sklearn_{cov_type}_...
+            sklearn_totals[cov_type] = get_sklearn_total_time(df)
 
         # torch runs (already CSV tables)
         for csvfile in torch_csvs:
@@ -54,6 +66,30 @@ def main():
             sheet = safe_sheet_name(csvfile.stem)
             df.to_excel(w, sheet_name=sheet, index=False)
             index_rows.append({"sheet": sheet, "source": "torch_csv", "file": csvfile.name})
+            # Extract cov_type from filename (e.g., torch_diag_N10000_D50_K5 -> diag)
+            cov_type = csvfile.stem.split("_")[1]  # torch_{cov_type}_...
+            if "gpu_time_total_us" in df.columns:
+                torch_totals[cov_type] = df["gpu_time_total_us"].sum() / 1_000_000  # us -> seconds
+            elif "cpu_time_total_us" in df.columns:
+                torch_totals[cov_type] = df["cpu_time_total_us"].sum() / 1_000_000
+
+        # Add sklearn summary sheet
+        if sklearn_totals:
+            sklearn_summary = pd.DataFrame([
+                {"covariance_type": cov, "total_cumtime_s": t}
+                for cov, t in sorted(sklearn_totals.items())
+            ])
+            sklearn_summary.to_excel(w, sheet_name="sklearn_totals", index=False)
+            index_rows.append({"sheet": "sklearn_totals", "source": "summary", "file": "sklearn_totals"})
+
+        # Add torch summary sheet
+        if torch_totals:
+            torch_summary = pd.DataFrame([
+                {"covariance_type": cov, "total_gpu_time_s": t}
+                for cov, t in sorted(torch_totals.items())
+            ])
+            torch_summary.to_excel(w, sheet_name="torch_totals", index=False)
+            index_rows.append({"sheet": "torch_totals", "source": "summary", "file": "torch_totals"})
 
         pd.DataFrame(index_rows).to_excel(w, sheet_name="INDEX", index=False)
 
