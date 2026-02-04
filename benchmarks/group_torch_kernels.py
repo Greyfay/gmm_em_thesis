@@ -309,9 +309,27 @@ def main():
 
         # Create comparison sheet with sklearn vs pytorch baseline times
         comparison_rows = []
-        for cov_type in sorted(set(sklearn_totals.keys()) | set(torch_baselines.keys())):
-            sklearn_t = sklearn_totals.get(cov_type, None)
-            torch_t = torch_baselines.get(cov_type, None)
+        
+        # Load baseline JSON files
+        torch_baseline_file = Path("profiles/torch_baselines.json")
+        sklearn_runtime_file = Path("profiles/sklearn_runtimes.json")
+        
+        torch_baselines_dict = {}
+        sklearn_runtimes_dict = {}
+        
+        if torch_baseline_file.exists():
+            with open(torch_baseline_file) as f:
+                torch_baselines_dict = json.load(f)
+            print(f"Loaded torch baselines: {torch_baselines_dict}")
+        
+        if sklearn_runtime_file.exists():
+            with open(sklearn_runtime_file) as f:
+                sklearn_runtimes_dict = json.load(f)
+            print(f"Loaded sklearn runtimes: {sklearn_runtimes_dict}")
+        
+        for cov_type in sorted(set(torch_baselines_dict.keys()) | set(sklearn_runtimes_dict.keys())):
+            sklearn_t = sklearn_runtimes_dict.get(cov_type, None)
+            torch_t = torch_baselines_dict.get(cov_type, None)
             speedup = None
             if sklearn_t is not None and torch_t is not None and torch_t > 0:
                 speedup = sklearn_t / torch_t
@@ -327,6 +345,9 @@ def main():
             comparison_df = pd.DataFrame(comparison_rows)
             comparison_df.to_excel(w, sheet_name="COMPARISON", index=False)
             index_rows.append({"sheet": "COMPARISON", "type": "comparison"})
+            print(f"Created COMPARISON sheet with {len(comparison_rows)} entries")
+        else:
+            print("Warning: No comparison data found (missing baseline JSON files)")
 
         pd.DataFrame(index_rows).to_excel(w, sheet_name="INDEX", index=False)
 
