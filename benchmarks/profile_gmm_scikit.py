@@ -17,15 +17,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUTDIR = Path("profiles")
 OUTDIR.mkdir(exist_ok=True)
 
-def profile_fit(n_samples=10000, n_features=50, n_components=5, cov_type="full"):
+def profile_fit(n_samples=50000, n_features=100, n_components=5, cov_type="full"):
     """Profile a single fit() call."""
     X = np.random.randn(n_samples, n_features).astype(np.float32)
     
     gmm = GaussianMixture(
         n_components=n_components,
         covariance_type=cov_type,
-        max_iter=50,
-        n_init=10,
+        max_iter=500,
+        n_init=50,
         init_params="kmeans",
         random_state=42,   
     )
