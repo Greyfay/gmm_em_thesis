@@ -51,10 +51,14 @@ def measure_fit_multiple(X, n_components=5, cov_type="full",
         warnings.simplefilter("ignore")
         warm.fit(X)
 
-    # Measure multiple runs
+    # Measure multiple runs with different random data
     times = []
     for run in range(num_runs):
         print(f"[{cov_type:9s}] run {run+1}/{num_runs}...", flush=True, end="")
+        
+        # Generate NEW random data for each run with different seed
+        np.random.seed(42 + run)
+        X_run = np.random.randn(X.shape[0], X.shape[1]).astype(np.float32)
         
         # Create new GMM instance for each run (fresh random state each time)
         gmm = GaussianMixture(
@@ -71,7 +75,7 @@ def measure_fit_multiple(X, n_components=5, cov_type="full",
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             t0 = time.perf_counter()
-            gmm.fit(X)
+            gmm.fit(X_run)
             t1 = time.perf_counter()
 
         wall = t1 - t0

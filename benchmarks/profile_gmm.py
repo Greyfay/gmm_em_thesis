@@ -142,6 +142,7 @@ def profile_fit(
     trace_dir: Optional[Path] = None,
     measure_baseline: bool = True,
     num_runs: int = 10,
+    run_seed: int = 42,
 ) -> None:
     """
     Profile a single fit() call across multiple runs.
@@ -149,6 +150,7 @@ def profile_fit(
     - enable_trace=False by default to avoid huge slowdowns from trace export.
     - measure_baseline=True measures baseline wall time without profiler.
     - num_runs: number of baseline measurements to average (default 10).
+    - run_seed: random seed for data generation (different per covariance type).
     - Profiler is run once after baselines are collected.
     """
     assert device in ("cuda", "cpu"), f"Unsupported device={device}"
@@ -156,6 +158,10 @@ def profile_fit(
         raise RuntimeError("CUDA requested but torch.cuda.is_available() is False")
 
     if X is None:
+        # Set seed for reproducible but different data per run
+        torch.manual_seed(run_seed)
+        if device == "cuda":
+            torch.cuda.manual_seed(run_seed)
         X = torch.randn(n_samples, n_features, device=device, dtype=dtype)
     else:
         n_samples, n_features = X.shape
@@ -178,7 +184,13 @@ def profile_fit(
     if measure_baseline:
         print(f"[{cov_type:9s}] Collecting {num_runs} baseline measurements...", flush=True)
         for run in range(num_runs):
-            t_run = _wall_time_fit(gmm, X)
+            # Generate NEW random data for each run with different seed
+            torch.manual_seed(run_seed + run)
+            if device == "cuda":
+                torch.cuda.manual_seed(run_seed + run)
+            X_run = torch.randn(n_samples, n_features, device=device, dtype=dtype)
+            
+            t_run = _wall_time_fit(gmm, X_run)
             baseline_times.append(t_run)
             print(f"  run {run+1}/{num_runs}: {t_run:.6f} s", flush=True)
         
@@ -269,18 +281,19 @@ if __name__ == "__main__":
     else:
         print("Warning: sklearn_runtimes_stats.json not found. Run profile_gmm_scikit.py first.\n")
     
-    # Generate data ONCE so each covariance type sees identical data (like scikit)
-    print("[data] Generating N=100000, D=500 tensor...")
-    X = torch.randn(100000, 500, device="cuda", dtype=torch.float32)
-    
-    # Profile each covariance type with the same data
-    for cov_type in ["diag", "spherical", "tied", "full"]:
+    # Profile each covariance type with different random data
+    for run_id, cov_type in enumerate(["diag", "spherical", "tied", "full"]):
+        print(f"\n{'='*60}")
+        print(f"Profiling {cov_type}")
+        print(f"{'='*60}")
+        
         profile_fit(
-            X=X,  # Pass pre-generated data
+            X=None,  # Generate new random data
             cov_type=cov_type,
             enable_trace=False,
             measure_baseline=True,
-            num_runs=10,  # Run 10 baseline measurements
+            num_runs=10,
+            run_seed=42 + run_id,  # Different seed per covariance type
         )
 
     # Export baseline statistics
