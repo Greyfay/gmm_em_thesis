@@ -320,12 +320,10 @@ def main():
         if torch_baseline_file.exists():
             with open(torch_baseline_file) as f:
                 torch_baselines_dict = json.load(f)
-            print(f"Loaded torch baselines: {torch_baselines_dict}")
         
         if sklearn_runtime_file.exists():
             with open(sklearn_runtime_file) as f:
                 sklearn_runtimes_dict = json.load(f)
-            print(f"Loaded sklearn runtimes: {sklearn_runtimes_dict}")
         
         for cov_type in sorted(set(torch_baselines_dict.keys()) | set(sklearn_runtimes_dict.keys())):
             sklearn_t = sklearn_runtimes_dict.get(cov_type, None)
@@ -343,24 +341,12 @@ def main():
 
         if comparison_rows:
             comparison_df = pd.DataFrame(comparison_rows)
-            print(f"Comparison DataFrame:\n{comparison_df}\n")  # Debug print
             comparison_df.to_excel(w, sheet_name="COMPARISON", index=False)
             index_rows.append({"sheet": "COMPARISON", "type": "comparison"})
-            print(f"Created COMPARISON sheet with {len(comparison_rows)} entries")
-        else:
-            print("Warning: No comparison data found (missing baseline JSON files)")
 
         pd.DataFrame(index_rows).to_excel(w, sheet_name="INDEX", index=False)
 
     print(f"Wrote: {OUT_XLSX}")
-    
-    # Re-open and verify the COMPARISON sheet was written
-    try:
-        verify_df = pd.read_excel(OUT_XLSX, sheet_name="COMPARISON")
-        print(f"Verified COMPARISON sheet has {len(verify_df)} rows:")
-        print(verify_df)
-    except Exception as e:
-        print(f"Warning: Could not verify COMPARISON sheet: {e}")
 
 if __name__ == "__main__":
     main()
