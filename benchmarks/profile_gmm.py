@@ -115,8 +115,8 @@ def _wall_time_fit(gmm: TorchGaussianMixture, X: torch.Tensor) -> float:
 
 
 def profile_fit(
-    n_samples: int = 50000,
-    n_features: int = 100,
+    n_samples: int = 100000,
+    n_features: int = 200,
     n_components: int = 5,
     cov_type: str = "full",
     device: str = "cuda",
@@ -130,7 +130,7 @@ def profile_fit(
 
     - enable_trace=False by default to avoid huge slowdowns from trace export.
     - measure_baseline=True prints baseline wall time without profiler for comparison.
-    - Default sizes: N=50000, D=100 for ~minute-scale runtime.
+    - Default sizes: N=100000, D=200 for multi-minute runtime.
     """
     assert device in ("cuda", "cpu"), f"Unsupported device={device}"
     if device == "cuda" and not torch.cuda.is_available():
@@ -141,8 +141,8 @@ def profile_fit(
     gmm = TorchGaussianMixture(
         n_components=n_components,
         covariance_type=cov_type,
-        max_iter=500,
-        n_init=50,
+        max_iter=1000,
+        n_init=100,
         init_params="kmeans",
         device=device,
         dtype=dtype,
