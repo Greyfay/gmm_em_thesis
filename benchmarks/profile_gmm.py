@@ -14,6 +14,7 @@ import os
 import sys
 import time
 import json
+import numpy as np
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -32,13 +33,14 @@ TRACEDIR = Path("results/profiles")
 TRACEDIR.mkdir(parents=True, exist_ok=True)
 
 # Track baseline times for comparison export
-BASELINE_TIMES = {}
-SKLEARN_TIMES = {}  # Will be loaded from sklearn_runtimes.json
+BASELINE_TIMES = {}  # Will store all 10 measurements
+BASELINE_STATS = {}  # Will store mean/std
+SKLEARN_STATS = {}  # Will be loaded from sklearn_runtimes_stats.json
 
 
-def load_sklearn_times() -> dict:
-    """Load sklearn runtimes from JSON, if available."""
-    sklearn_file = OUTDIR / "sklearn_runtimes.json"
+def load_sklearn_stats() -> dict:
+    """Load sklearn runtime statistics from JSON, if available."""
+    sklearn_file = OUTDIR / "sklearn_runtimes_stats.json"
     if sklearn_file.exists():
         with open(sklearn_file) as f:
             return json.load(f)
@@ -139,14 +141,15 @@ def profile_fit(
     enable_trace: bool = False,
     trace_dir: Optional[Path] = None,
     measure_baseline: bool = True,
+    num_runs: int = 10,
 ) -> None:
     """
-    Profile a single fit() call.
+    Profile a single fit() call across multiple runs.
 
     - enable_trace=False by default to avoid huge slowdowns from trace export.
-    - measure_baseline=True prints baseline wall time without profiler for comparison.
-    - Default sizes: N=100000, D=200, max_iter=50, n_init=1 for ~30-60s per run (comparable to scikit).
-    - If X is None, generates new data; otherwise uses the provided tensor.
+    - measure_baseline=True measures baseline wall time without profiler.
+    - num_runs: number of baseline measurements to average (default 10).
+    - Profiler is run once after baselines are collected.
     """
     assert device in ("cuda", "cpu"), f"Unsupported device={device}"
     if device == "cuda" and not torch.cuda.is_available():
@@ -170,13 +173,22 @@ def profile_fit(
     # Warmup (do not time / do not profile)
     gmm.fit(X)
 
-    # Optional: baseline wall time without profiler (recommended for thesis plots)
-    baseline_s = None
+    # Baseline measurements (no profiler)
+    baseline_times = []
     if measure_baseline:
-        baseline_s = _wall_time_fit(gmm, X)
-        print(f"[baseline] cov={cov_type:9s} wall={baseline_s:.6f} s (no profiler)")
+        print(f"[{cov_type:9s}] Collecting {num_runs} baseline measurements...", flush=True)
+        for run in range(num_runs):
+            t_run = _wall_time_fit(gmm, X)
+            baseline_times.append(t_run)
+            print(f"  run {run+1}/{num_runs}: {t_run:.6f} s", flush=True)
+        
+        mean_baseline = np.mean(baseline_times)
+        std_baseline = np.std(baseline_times)
+        print(f"[baseline] cov={cov_type:9s} mean={mean_baseline:.6f} s | std={std_baseline:.6f} s")
+        
         # Store for later export
-        BASELINE_TIMES[cov_type] = baseline_s
+        BASELINE_TIMES[cov_type] = baseline_times
+        BASELINE_STATS[cov_type] = {"mean": float(mean_baseline), "std": float(std_baseline)}
 
     # Profiler config
     activities = [ProfilerActivity.CPU]
@@ -247,15 +259,15 @@ def profile_fit(
 
 
 if __name__ == "__main__":
-    # Load sklearn runtimes for comparison
-    SKLEARN_TIMES = load_sklearn_times()
-    if SKLEARN_TIMES:
-        print("Loaded sklearn runtimes for comparison:")
-        for cov_type, runtime in SKLEARN_TIMES.items():
-            print(f"  {cov_type:12s}: {runtime:.6f} s")
+    # Load sklearn runtime statistics
+    SKLEARN_STATS = load_sklearn_stats()
+    if SKLEARN_STATS:
+        print("Loaded sklearn runtime statistics:")
+        for cov_type, stats in SKLEARN_STATS.items():
+            print(f"  {cov_type:12s}: mean={stats['mean']:.6f} s | std={stats['std']:.6f} s")
         print()
     else:
-        print("Warning: sklearn_runtimes.json not found. Run profile_gmm_scikit.py first.\n")
+        print("Warning: sklearn_runtimes_stats.json not found. Run profile_gmm_scikit.py first.\n")
     
     # Generate data ONCE so each covariance type sees identical data (like scikit)
     print("[data] Generating N=100000, D=500 tensor...")
@@ -266,15 +278,16 @@ if __name__ == "__main__":
         profile_fit(
             X=X,  # Pass pre-generated data
             cov_type=cov_type,
-            enable_trace=False,     # keep False for speed and realistic timings
-            measure_baseline=True,  # useful for thesis runtime plots
+            enable_trace=False,
+            measure_baseline=True,
+            num_runs=10,  # Run 10 baseline measurements
         )
 
-    # Export baseline times for comparison
-    baseline_path = OUTDIR / "torch_baselines.json"
-    with open(baseline_path, "w") as f:
-        json.dump(BASELINE_TIMES, f, indent=2)
-    print(f"\nExported baseline times to: {baseline_path}")
+    # Export baseline statistics
+    baseline_stats_path = OUTDIR / "torch_baselines_stats.json"
+    with open(baseline_stats_path, "w") as f:
+        json.dump(BASELINE_STATS, f, indent=2)
+    print(f"\nExported torch baseline statistics to: {baseline_stats_path}")
 
     # If you ever want a deep trace for one small run, do something like:
     # profile_fit(cov_type="full", n_samples=2000, n_features=20, n_components=5,

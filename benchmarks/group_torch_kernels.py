@@ -307,35 +307,43 @@ def main():
             summary.to_excel(w, sheet_name=sum_sheet[:31], index=False)
             index_rows.append({"sheet": sum_sheet[:31], "type": "torch_summary", "source": sh})
 
-        # Create comparison sheet with sklearn vs pytorch baseline times
+        # Create comparison sheet with sklearn vs pytorch baseline times + variance
         comparison_rows = []
         
-        # Load baseline JSON files
-        torch_baseline_file = Path("profiles/torch_baselines.json")
-        sklearn_runtime_file = Path("profiles/sklearn_runtimes.json")
+        # Load baseline statistics JSON files
+        torch_baseline_stats_file = Path("profiles/torch_baselines_stats.json")
+        sklearn_runtime_stats_file = Path("profiles/sklearn_runtimes_stats.json")
         
-        torch_baselines_dict = {}
-        sklearn_runtimes_dict = {}
+        torch_stats_dict = {}
+        sklearn_stats_dict = {}
         
-        if torch_baseline_file.exists():
-            with open(torch_baseline_file) as f:
-                torch_baselines_dict = json.load(f)
+        if torch_baseline_stats_file.exists():
+            with open(torch_baseline_stats_file) as f:
+                torch_stats_dict = json.load(f)
         
-        if sklearn_runtime_file.exists():
-            with open(sklearn_runtime_file) as f:
-                sklearn_runtimes_dict = json.load(f)
+        if sklearn_runtime_stats_file.exists():
+            with open(sklearn_runtime_stats_file) as f:
+                sklearn_stats_dict = json.load(f)
         
-        for cov_type in sorted(set(torch_baselines_dict.keys()) | set(sklearn_runtimes_dict.keys())):
-            sklearn_t = sklearn_runtimes_dict.get(cov_type, None)
-            torch_t = torch_baselines_dict.get(cov_type, None)
+        for cov_type in sorted(set(torch_stats_dict.keys()) | set(sklearn_stats_dict.keys())):
+            sklearn_data = sklearn_stats_dict.get(cov_type, {})
+            torch_data = torch_stats_dict.get(cov_type, {})
+            
+            sklearn_mean = sklearn_data.get("mean")
+            sklearn_std = sklearn_data.get("std")
+            torch_mean = torch_data.get("mean")
+            torch_std = torch_data.get("std")
+            
             speedup = None
-            if sklearn_t is not None and torch_t is not None and torch_t > 0:
-                speedup = sklearn_t / torch_t
+            if sklearn_mean is not None and torch_mean is not None and torch_mean > 0:
+                speedup = sklearn_mean / torch_mean
 
             comparison_rows.append({
                 "covariance_type": cov_type,
-                "sklearn_time_s": sklearn_t,
-                "torch_baseline_s": torch_t,
+                "sklearn_time_mean_s": sklearn_mean,
+                "sklearn_time_std_s": sklearn_std,
+                "torch_time_mean_s": torch_mean,
+                "torch_time_std_s": torch_std,
                 "speedup_ratio": speedup,
             })
 

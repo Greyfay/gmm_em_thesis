@@ -1,4 +1,4 @@
-"""Measure scikit-learn GaussianMixture wall time for comparison with torch."""
+"""Measure scikit-learn GaussianMixture wall time (10 runs) for comparison with torch."""
 
 import os
 import json
@@ -11,17 +11,19 @@ from sklearn.mixture import GaussianMixture
 OUTDIR = Path("profiles")
 OUTDIR.mkdir(exist_ok=True)
 
-def measure_fit(X, n_components=5, cov_type="full",
-                max_iter=50, n_init=1, init_params="random", tol=1e-3,
-                warmup_iter=2):
-    """Measure wall-time of a single fit() call with sane settings."""
+NUM_RUNS = 10
+
+def measure_fit_multiple(X, n_components=5, cov_type="full",
+                         max_iter=50, n_init=1, init_params="random", tol=1e-3,
+                         warmup_iter=2, num_runs=NUM_RUNS):
+    """Measure wall-time across multiple runs."""
     print(
         f"[{cov_type:9s}] setup: N={X.shape[0]}, D={X.shape[1]}, "
         f"K={n_components}, max_iter={max_iter}, n_init={n_init}, init={init_params}",
         flush=True,
     )
 
-    gmm = GaussianMixture(
+    gmm_template = GaussianMixture(
         n_components=n_components,
         covariance_type=cov_type,
         max_iter=max_iter,
@@ -29,11 +31,10 @@ def measure_fit(X, n_components=5, cov_type="full",
         init_params=init_params,
         tol=tol,
         random_state=42,
-        verbose=2,              # show progress
-        verbose_interval=10,
+        verbose=0,
     )
 
-    # Warmup: small number of iterations to warm BLAS/cache, not a full run
+    # Warmup once
     warm = GaussianMixture(
         n_components=n_components,
         covariance_type=cov_type,
@@ -50,19 +51,45 @@ def measure_fit(X, n_components=5, cov_type="full",
         warnings.simplefilter("ignore")
         warm.fit(X)
 
-    print(f"[{cov_type:9s}] measuring...", flush=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        t0 = time.perf_counter()
-        gmm.fit(X)
-        t1 = time.perf_counter()
+    # Measure multiple runs
+    times = []
+    for run in range(num_runs):
+        print(f"[{cov_type:9s}] run {run+1}/{num_runs}...", flush=True, end="")
+        
+        # Create new GMM instance for each run (fresh random state each time)
+        gmm = GaussianMixture(
+            n_components=n_components,
+            covariance_type=cov_type,
+            max_iter=max_iter,
+            n_init=n_init,
+            init_params=init_params,
+            tol=tol,
+            random_state=42 + run,  # Different seed each run
+            verbose=0,
+        )
+        
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            t0 = time.perf_counter()
+            gmm.fit(X)
+            t1 = time.perf_counter()
 
-    wall = t1 - t0
-    print(f"[{cov_type:9s}] wall={wall:.6f} s | converged={gmm.converged_} | n_iter={gmm.n_iter_}\n", flush=True)
-    return wall
+        wall = t1 - t0
+        times.append(wall)
+        print(f" {wall:.6f} s", flush=True)
+
+    mean_time = np.mean(times)
+    std_time = np.std(times)
+    print(f"[{cov_type:9s}] mean={mean_time:.6f} s | std={std_time:.6f} s\n", flush=True)
+    
+    return {
+        "mean": float(mean_time),
+        "std": float(std_time),
+        "runs": [float(t) for t in times],
+    }
 
 if __name__ == "__main__":
-    print("scikit-learn GaussianMixture wall-time measurement\n")
+    print(f"scikit-learn GaussianMixture wall-time measurement ({NUM_RUNS} runs)\n")
 
     # Generate ONCE so each covariance type sees identical data
     n_samples = 100000
@@ -72,20 +99,21 @@ if __name__ == "__main__":
     print("[data] generating...", flush=True)
     X = np.random.randn(n_samples, n_features).astype(np.float32)
 
-    sklearn_times = {}
+    sklearn_stats = {}
     for cov_type in ["diag", "spherical", "tied", "full"]:
-        sklearn_times[cov_type] = measure_fit(
+        sklearn_stats[cov_type] = measure_fit_multiple(
             X,
             n_components=n_components,
             cov_type=cov_type,
-            max_iter=50,          # <- adjust
-            n_init=1,             # <- IMPORTANT
-            init_params="random", # <- avoids kmeans dominating runtime
+            max_iter=50,
+            n_init=1,
+            init_params="random",
             tol=1e-3,
             warmup_iter=2,
+            num_runs=NUM_RUNS,
         )
 
-    times_path = OUTDIR / "sklearn_runtimes.json"
-    with open(times_path, "w") as f:
-        json.dump(sklearn_times, f, indent=2)
-    print(f"\nExported sklearn runtimes to: {times_path}")
+    stats_path = OUTDIR / "sklearn_runtimes_stats.json"
+    with open(stats_path, "w") as f:
+        json.dump(sklearn_stats, f, indent=2)
+    print(f"Exported sklearn runtime stats to: {stats_path}")
