@@ -45,12 +45,16 @@ def _pick_sort_key_for_table() -> str:
     return "device_time_total"
 
 
-def prof_to_df(prof) -> pd.DataFrame:
+def prof_to_df(prof, key_avg=None) -> pd.DataFrame:
     """
     Convert torch.profiler output to a DataFrame with unified GPU timing columns.
+    Pass pre-computed key_avg to avoid redundant aggregation on large traces.
     Prefer device_time_* (modern), fall back to cuda_time_* (legacy).
     """
-    events = prof.key_averages()
+    if key_avg is None:
+        key_avg = prof.key_averages()
+    
+    events = key_avg
     rows = []
 
     for e in events:
@@ -197,21 +201,26 @@ def profile_fit(
     out_csv = OUTDIR / f"{tag}.csv"
     out_xlsx = OUTDIR / f"{tag}.xlsx"
 
-    df = prof_to_df(prof)
+    print(f"\n=== Profile: {cov_type}, N={n_samples}, D={n_features}, K={n_components} ===")
+    print("Processing profiler events (aggregating and sorting)...")
+    
+    # Compute key_averages once and reuse
+    key_avg = prof.key_averages()
+    
+    df = prof_to_df(prof, key_avg)
     df.to_csv(out_csv, index=False)
     df.to_excel(out_xlsx, index=False)
 
-    print(f"\n=== Profile: {cov_type}, N={n_samples}, D={n_features}, K={n_components} ===")
-    print("Saved:", out_csv)
-    print("Saved:", out_xlsx)
+    print(f"Saved: {out_csv}")
+    print(f"Saved: {out_xlsx}")
 
-    # Print top ops sorted by GPU/device time (fallback to cuda_time_total if needed)
+    # Print top ops using the already-computed key_avg (no re-computation)
     sort_key = _pick_sort_key_for_table()
     try:
-        print(prof.key_averages().table(sort_by=sort_key, row_limit=20))
+        print(key_avg.table(sort_by=sort_key, row_limit=20))
     except Exception:
         # Older versions may not have device_time_total; fall back
-        print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+        print(key_avg.table(sort_by="cuda_time_total", row_limit=20))
 
 
 if __name__ == "__main__":
