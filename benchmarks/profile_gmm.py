@@ -129,6 +129,7 @@ def _wall_time_fit(gmm: TorchGaussianMixture, X: torch.Tensor) -> float:
 
 
 def profile_fit(
+    X: Optional[torch.Tensor] = None,
     n_samples: int = 100000,
     n_features: int = 200,
     n_components: int = 5,
@@ -144,20 +145,24 @@ def profile_fit(
 
     - enable_trace=False by default to avoid huge slowdowns from trace export.
     - measure_baseline=True prints baseline wall time without profiler for comparison.
-    - Default sizes: N=100000, D=200 for multi-minute runtime.
+    - Default sizes: N=100000, D=200, max_iter=50, n_init=1 for ~30-60s per run (comparable to scikit).
+    - If X is None, generates new data; otherwise uses the provided tensor.
     """
     assert device in ("cuda", "cpu"), f"Unsupported device={device}"
     if device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but torch.cuda.is_available() is False")
 
-    X = torch.randn(n_samples, n_features, device=device, dtype=dtype)
+    if X is None:
+        X = torch.randn(n_samples, n_features, device=device, dtype=dtype)
+    else:
+        n_samples, n_features = X.shape
 
     gmm = TorchGaussianMixture(
         n_components=n_components,
         covariance_type=cov_type,
-        max_iter=1000,
-        n_init=100,
-        init_params="kmeans",
+        max_iter=50,
+        n_init=1,
+        init_params="random",
         device=device,
         dtype=dtype,
     )
@@ -252,9 +257,14 @@ if __name__ == "__main__":
     else:
         print("Warning: sklearn_runtimes.json not found. Run profile_gmm_scikit.py first.\n")
     
-    # Default: fast profiling (no trace), plus baseline timing
+    # Generate data ONCE so each covariance type sees identical data (like scikit)
+    print("[data] Generating N=100000, D=200 tensor...")
+    X = torch.randn(100000, 200, device="cuda", dtype=torch.float32)
+    
+    # Profile each covariance type with the same data
     for cov_type in ["diag", "spherical", "tied", "full"]:
         profile_fit(
+            X=X,  # Pass pre-generated data
             cov_type=cov_type,
             enable_trace=False,     # keep False for speed and realistic timings
             measure_baseline=True,  # useful for thesis runtime plots
