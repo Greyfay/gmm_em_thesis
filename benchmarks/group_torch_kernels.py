@@ -353,6 +353,14 @@ def main():
         pd.DataFrame(index_rows).to_excel(w, sheet_name="INDEX", index=False)
 
     print(f"Wrote: {OUT_XLSX}")
+    
+    # Re-open and verify the COMPARISON sheet was written
+    try:
+        verify_df = pd.read_excel(OUT_XLSX, sheet_name="COMPARISON")
+        print(f"Verified COMPARISON sheet has {len(verify_df)} rows:")
+        print(verify_df)
+    except Exception as e:
+        print(f"Warning: Could not verify COMPARISON sheet: {e}")
 
 if __name__ == "__main__":
     main()
