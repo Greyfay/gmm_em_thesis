@@ -66,7 +66,7 @@ if __name__ == "__main__":
 
     # Generate ONCE so each covariance type sees identical data
     n_samples = 100000
-    n_features = 200
+    n_features = 500
     n_components = 5
 
     print("[data] generating...", flush=True)

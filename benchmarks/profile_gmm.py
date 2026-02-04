@@ -131,7 +131,7 @@ def _wall_time_fit(gmm: TorchGaussianMixture, X: torch.Tensor) -> float:
 def profile_fit(
     X: Optional[torch.Tensor] = None,
     n_samples: int = 100000,
-    n_features: int = 200,
+    n_features: int = 500,
     n_components: int = 5,
     cov_type: str = "full",
     device: str = "cuda",
@@ -258,8 +258,8 @@ if __name__ == "__main__":
         print("Warning: sklearn_runtimes.json not found. Run profile_gmm_scikit.py first.\n")
     
     # Generate data ONCE so each covariance type sees identical data (like scikit)
-    print("[data] Generating N=100000, D=200 tensor...")
-    X = torch.randn(100000, 200, device="cuda", dtype=torch.float32)
+    print("[data] Generating N=100000, D=500 tensor...")
+    X = torch.randn(100000, 500, device="cuda", dtype=torch.float32)
     
     # Profile each covariance type with the same data
     for cov_type in ["diag", "spherical", "tied", "full"]:
