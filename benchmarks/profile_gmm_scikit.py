@@ -18,6 +18,7 @@ OUTDIR.mkdir(exist_ok=True)
 
 def measure_fit(n_samples=100000, n_features=200, n_components=5, cov_type="full"):
     """Measure wall-time of a single fit() call."""
+    print(f"[{cov_type:9s}] Generating data...", flush=True)
     X = np.random.randn(n_samples, n_features).astype(np.float32)
     
     gmm = GaussianMixture(
@@ -29,12 +30,14 @@ def measure_fit(n_samples=100000, n_features=200, n_components=5, cov_type="full
         random_state=42,   
     )
 
-    # Warmup (silent)
+    # Warmup
+    print(f"[{cov_type:9s}] Warmup fit (this will take a few minutes)...", flush=True)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         gmm.fit(X)
 
     # Measure wall time
+    print(f"[{cov_type:9s}] Measuring wall time...", flush=True)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         t0 = time.perf_counter()
@@ -42,7 +45,7 @@ def measure_fit(n_samples=100000, n_features=200, n_components=5, cov_type="full
         t1 = time.perf_counter()
     
     wall_time_s = t1 - t0
-    print(f"[sklearn] cov={cov_type:9s} wall={wall_time_s:.6f} s")
+    print(f"[{cov_type:9s}] wall={wall_time_s:.6f} s\n", flush=True)
     return wall_time_s
 
 
