@@ -343,6 +343,7 @@ def main():
 
         if comparison_rows:
             comparison_df = pd.DataFrame(comparison_rows)
+            print(f"Comparison DataFrame:\n{comparison_df}\n")  # Debug print
             comparison_df.to_excel(w, sheet_name="COMPARISON", index=False)
             index_rows.append({"sheet": "COMPARISON", "type": "comparison"})
             print(f"Created COMPARISON sheet with {len(comparison_rows)} entries")
