@@ -1,14 +1,12 @@
-"""Profile scikit-learn GaussianMixture to compare with torch implementation."""
+"""Measure scikit-learn GaussianMixture wall time for comparison with torch."""
 
 import sys
 import os
 import warnings
+import json
+import time
 import numpy as np
 from sklearn.mixture import GaussianMixture
-import time
-import cProfile
-import pstats
-from io import StringIO
 from pathlib import Path
 
 # Add parent to path
@@ -17,8 +15,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUTDIR = Path("profiles")
 OUTDIR.mkdir(exist_ok=True)
 
-def profile_fit(n_samples=100000, n_features=200, n_components=5, cov_type="full"):
-    """Profile a single fit() call."""
+
+def measure_fit(n_samples=100000, n_features=200, n_components=5, cov_type="full"):
+    """Measure wall-time of a single fit() call."""
     X = np.random.randn(n_samples, n_features).astype(np.float32)
     
     gmm = GaussianMixture(
@@ -30,38 +29,32 @@ def profile_fit(n_samples=100000, n_features=200, n_components=5, cov_type="full
         random_state=42,   
     )
 
-    # Warmup
+    # Warmup (silent)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         gmm.fit(X)
 
-    # Profile with cProfile
-    profiler = cProfile.Profile()
-    profiler.enable()
+    # Measure wall time
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
+        t0 = time.perf_counter()
         gmm.fit(X)
-    profiler.disable()
-
-    # save .pstats for export
-    tag = f"sklearn_{cov_type}_N{n_samples}_D{n_features}_K{n_components}"
-    pstats_path = OUTDIR / f"{tag}.pstats"
-    profiler.dump_stats(str(pstats_path))
-
-    # Print summary
-    print(f"\n{'='*70}")
-    print(f"Profile: {cov_type:12s} | N={n_samples:5d} | D={n_features:2d} | K={n_components}")
-    print(f"Saved:  {pstats_path}")
-    print(f"{'='*70}")
+        t1 = time.perf_counter()
     
-    # Sort by cumulative time and print top 30 functions
-    s = StringIO()
-    ps = pstats.Stats(profiler, stream=s).strip_dirs().sort_stats('cumulative')
-    ps.print_stats(30)
-    print(s.getvalue())
+    wall_time_s = t1 - t0
+    print(f"[sklearn] cov={cov_type:9s} wall={wall_time_s:.6f} s")
+    return wall_time_s
 
 
 if __name__ == "__main__":
-    print("scikit-learn GaussianMixture Benchmark")
+    print("scikit-learn GaussianMixture wall-time measurement\n")
+    
+    sklearn_times = {}
     for cov_type in ["diag", "spherical", "tied", "full"]:
-        profile_fit(cov_type=cov_type)
+        sklearn_times[cov_type] = measure_fit(cov_type=cov_type)
+    
+    # Export wall times for comparison
+    times_path = OUTDIR / "sklearn_runtimes.json"
+    with open(times_path, "w") as f:
+        json.dump(sklearn_times, f, indent=2)
+    print(f"\nExported sklearn runtimes to: {times_path}")

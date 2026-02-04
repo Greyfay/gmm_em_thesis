@@ -33,6 +33,16 @@ TRACEDIR.mkdir(parents=True, exist_ok=True)
 
 # Track baseline times for comparison export
 BASELINE_TIMES = {}
+SKLEARN_TIMES = {}  # Will be loaded from sklearn_runtimes.json
+
+
+def load_sklearn_times() -> dict:
+    """Load sklearn runtimes from JSON, if available."""
+    sklearn_file = OUTDIR / "sklearn_runtimes.json"
+    if sklearn_file.exists():
+        with open(sklearn_file) as f:
+            return json.load(f)
+    return {}
 
 
 def _pick_sort_key_for_table() -> str:
@@ -201,13 +211,21 @@ def profile_fit(
     out_csv = OUTDIR / f"{tag}.csv"
     out_xlsx = OUTDIR / f"{tag}.xlsx"
 
-    print(f"\n=== Profile: {cov_type}, N={n_samples}, D={n_features}, K={n_components} ===")
+    print("\n=== Profile: {}, N={}, D={}, K={} ===".format(cov_type, n_samples, n_features, n_components))
     print("Processing profiler events (aggregating and sorting)...")
     
     # Compute key_averages once and reuse
     key_avg = prof.key_averages()
     
+    # Get sklearn runtime for this cov_type if available
+    sklearn_time = SKLEARN_TIMES.get(cov_type, None)
+    
     df = prof_to_df(prof, key_avg)
+    
+    # Add sklearn runtime as a comparison column
+    if sklearn_time is not None:
+        df["sklearn_time_s"] = sklearn_time
+    
     df.to_csv(out_csv, index=False)
     df.to_excel(out_xlsx, index=False)
 
@@ -224,6 +242,16 @@ def profile_fit(
 
 
 if __name__ == "__main__":
+    # Load sklearn runtimes for comparison
+    SKLEARN_TIMES = load_sklearn_times()
+    if SKLEARN_TIMES:
+        print("Loaded sklearn runtimes for comparison:")
+        for cov_type, runtime in SKLEARN_TIMES.items():
+            print(f"  {cov_type:12s}: {runtime:.6f} s")
+        print()
+    else:
+        print("Warning: sklearn_runtimes.json not found. Run profile_gmm_scikit.py first.\n")
+    
     # Default: fast profiling (no trace), plus baseline timing
     for cov_type in ["diag", "spherical", "tied", "full"]:
         profile_fit(
