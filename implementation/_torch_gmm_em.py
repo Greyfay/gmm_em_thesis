@@ -104,11 +104,9 @@ def _compute_precisions_cholesky(cov: torch.Tensor, cov_type: str) -> torch.Tens
 
     # full
     K, D, _ = cov.shape
-    I = torch.eye(D, device=cov.device, dtype=cov.dtype)
-    out = torch.empty_like(cov)
-    for k in range(K):
-        L = torch.linalg.cholesky(cov[k])
-        out[k] = torch.linalg.solve_triangular(L, I, upper=False)
+    L = torch.linalg.cholesky(cov)  # (K, D, D) batched
+    I = torch.eye(D, device=cov.device, dtype=cov.dtype).unsqueeze(0).expand(K, D, D)
+    out = torch.linalg.solve_triangular(L, I, upper=False)  # batched solve
     return out
 
 
@@ -128,12 +126,8 @@ def _compute_precisions(prec_chol: torch.Tensor, cov_type: str) -> torch.Tensor:
         return prec_chol.transpose(-1, -2) @ prec_chol
 
     # full
-    K = prec_chol.shape[0]
-    out = torch.empty_like(prec_chol)
-    for k in range(K):
-        P = prec_chol[k]
-        out[k] = P.transpose(-1, -2) @ P
-    return out
+    # precision = P^T P using batched matrix multiplication
+    return torch.bmm(prec_chol.transpose(-1, -2), prec_chol)
 
 
 # ---------------------------
@@ -198,12 +192,11 @@ def _estimate_log_gaussian_prob_tied_precchol(
 
     diff = X.unsqueeze(1) - means.unsqueeze(0)  # (N,K,D)
 
-    # y = diff @ P^T
-    Pt = precisions_chol.transpose(0, 1)  # (D,D)
-    mahal = torch.empty((N, K), device=X.device, dtype=X.dtype)
-    for k in range(K):
-        y = diff[:, k, :] @ Pt  # (N,D)
-        mahal[:, k] = torch.sum(y * y, dim=1)
+    # y = diff @ P^T using einsum for all components at once
+    # diff: (N,K,D), precisions_chol: (D,D)
+    # y[n,k,:] = diff[n,k,:] @ P^T
+    y = torch.einsum('nkd,ed->nke', diff, precisions_chol)  # (N,K,D)
+    mahal = torch.sum(y * y, dim=2)  # (N,K)
 
     return -0.5 * (D * math.log(2 * math.pi) + mahal) + log_det_term
 
@@ -221,14 +214,14 @@ def _estimate_log_gaussian_prob_full_precchol(
 
     diff = X.unsqueeze(1) - means.unsqueeze(0)  # (N,K,D)
 
-    log_det_term = torch.empty((K,), device=X.device, dtype=X.dtype)
-    mahal = torch.empty((N, K), device=X.device, dtype=X.dtype)
+    # Compute log determinant terms for all components at once
+    # precisions_chol: (K,D,D), extract diagonals: (K,D)
+    log_det_term = torch.sum(torch.log(torch.diagonal(precisions_chol, dim1=1, dim2=2)), dim=1)  # (K,)
 
-    for k in range(K):
-        P = precisions_chol[k]
-        log_det_term[k] = torch.sum(torch.log(torch.diagonal(P)))
-        y = diff[:, k, :] @ P.transpose(0, 1)  # (N,D)
-        mahal[:, k] = torch.sum(y * y, dim=1)
+    # Compute Mahalanobis distance using einsum
+    # y[n,k,:] = diff[n,k,:] @ P[k]^T
+    y = torch.einsum('nkd,kde->nke', diff, precisions_chol.transpose(-1, -2))  # (N,K,D)
+    mahal = torch.sum(y * y, dim=2)  # (N,K)
 
     return -0.5 * (D * math.log(2 * math.pi) + mahal) + log_det_term.unsqueeze(0)
 
@@ -296,9 +289,10 @@ def _maximization_step(
     diff = X.unsqueeze(1) - new_means.unsqueeze(0)  # (N,K,D)
 
     if cov_type == "diag":
-        new_cov = torch.empty((K, D), device=X.device, dtype=X.dtype)
-        for k in range(K):
-            new_cov[k] = (resp[:, k].unsqueeze(1) * (diff[:, k, :] ** 2)).sum(dim=0) / nk[k]
+        # Vectorized computation: (resp * diff^2).sum over N, then divide by nk
+        # resp: (N,K), diff: (N,K,D)
+        weighted_sq_diff = resp.unsqueeze(2) * (diff ** 2)  # (N,K,D)
+        new_cov = weighted_sq_diff.sum(dim=0) / nk.unsqueeze(1)  # (K,D)
         new_cov = new_cov + reg_covar
 
     elif cov_type == "spherical":
@@ -308,20 +302,19 @@ def _maximization_step(
         new_cov = diag_cov.mean(dim=1)                    # (K,)
 
     elif cov_type == "tied":
-        cov_sum = torch.zeros((D, D), device=X.device, dtype=X.dtype)
-        for k in range(K):
-            wdiff = diff[:, k, :] * resp[:, k].unsqueeze(1)  # (N,D)
-            cov_sum += wdiff.T @ diff[:, k, :]
+        # Compute tied covariance in one einsum operation
+        # sum_k sum_n resp[n,k] * diff[n,k,:] * diff[n,k,:]^T
+        cov_sum = torch.einsum('nk,nkd,nke->de', resp, diff, diff)  # (D,D)
         new_cov = cov_sum / nk.sum()
         new_cov = new_cov + reg_covar * torch.eye(D, device=X.device, dtype=X.dtype)
 
     else:  # full
-        new_cov = torch.empty((K, D, D), device=X.device, dtype=X.dtype)
+        # Compute full covariance for all components in one einsum operation
+        # For each k: sum_n resp[n,k] * diff[n,k,:] * diff[n,k,:]^T / nk[k]
+        cov_sum = torch.einsum('nk,nkd,nke->kde', resp, diff, diff)  # (K,D,D)
+        new_cov = cov_sum / nk.unsqueeze(1).unsqueeze(2)  # (K,D,D)
         eye = torch.eye(D, device=X.device, dtype=X.dtype)
-        for k in range(K):
-            wdiff = diff[:, k, :] * resp[:, k].unsqueeze(1)
-            Ck = (wdiff.T @ diff[:, k, :]) / nk[k]
-            new_cov[k] = Ck + reg_covar * eye
+        new_cov = new_cov + reg_covar * eye.unsqueeze(0)
 
     return new_means, new_cov, new_weights
 
@@ -372,12 +365,21 @@ def _kmeans_lloyd_with_init(
         d2 = torch.cdist(X, centroids).pow(2)  # (N,K)
         labels = torch.argmin(d2, dim=1)
 
-        for k in range(K):
-            mask = labels == k
-            if mask.any():
-                centroids[k] = X[mask].mean(dim=0)
-            else:
-                centroids[k] = X[torch.randint(0, N, (1,), device=X.device)].squeeze(0)
+        # Parallelize centroid updates using scatter_add
+        counts = torch.zeros((K,), device=X.device, dtype=X.dtype)
+        sums = torch.zeros((K, D), device=X.device, dtype=X.dtype)
+        
+        counts.scatter_add_(0, labels, torch.ones((N,), device=X.device, dtype=X.dtype))
+        sums.scatter_add_(0, labels.unsqueeze(1).expand(N, D), X)
+        
+        # Handle empty clusters
+        empty_mask = counts == 0
+        if empty_mask.any():
+            random_idx = torch.randint(0, N, (empty_mask.sum().item(),), device=X.device)
+            centroids[empty_mask] = X[random_idx]
+            counts[empty_mask] = 1.0
+        
+        centroids = sums / counts.unsqueeze(1)
 
     return labels
 
@@ -767,39 +769,32 @@ class TorchGaussianMixture:
         cat = torch.distributions.Categorical(probs=p.weights)
         labels = cat.sample((n_samples,))  # (n_samples,)
 
-        X_out = torch.empty((n_samples, D), device=p.means.device, dtype=p.means.dtype)
-
+        # Generate samples more efficiently by indexing
+        # Select means and covariances based on labels, then sample all at once
+        selected_means = p.means[labels]  # (n_samples, D)
+        
         if p.cov_type == "diag":
-            # std: (K,D)
-            std = torch.sqrt(p.cov)
-            for k in range(K):
-                mask = labels == k
-                if mask.any():
-                    n_k = int(mask.sum().item())
-                    dist = torch.distributions.Normal(loc=p.means[k], scale=std[k])
-                    X_out[mask] = dist.sample((n_k,))
+            std = torch.sqrt(p.cov[labels])  # (n_samples, D)
+            noise = torch.randn((n_samples, D), device=p.means.device, dtype=p.means.dtype)
+            X_out = selected_means + noise * std
 
         elif p.cov_type == "spherical":
-            for k in range(K):
-                mask = labels == k
-                if mask.any():
-                    n_k = int(mask.sum().item())
-                    std = torch.sqrt(p.cov[k])
-                    dist = torch.distributions.Normal(loc=p.means[k], scale=std)
-                    X_out[mask] = dist.sample((n_k,))
+            std = torch.sqrt(p.cov[labels]).unsqueeze(1)  # (n_samples, 1)
+            noise = torch.randn((n_samples, D), device=p.means.device, dtype=p.means.dtype)
+            X_out = selected_means + noise * std
 
         elif p.cov_type == "tied":
+            # Sample from N(0, cov) then add component-specific means
             mvn = torch.distributions.MultivariateNormal(
                 loc=torch.zeros(D, device=p.means.device, dtype=p.means.dtype),
                 covariance_matrix=p.cov,
             )
-            for k in range(K):
-                mask = labels == k
-                if mask.any():
-                    n_k = int(mask.sum().item())
-                    X_out[mask] = mvn.sample((n_k,)) + p.means[k]
+            X_out = mvn.sample((n_samples,)) + selected_means
 
         else:  # full
+            # For full covariance, we need to handle each component separately
+            # but we can batch sample generation
+            X_out = torch.empty((n_samples, D), device=p.means.device, dtype=p.means.dtype)
             for k in range(K):
                 mask = labels == k
                 if mask.any():
