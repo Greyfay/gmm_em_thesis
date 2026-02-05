@@ -79,7 +79,6 @@ def observe_torch():
         tol=1e-3,
         device="cuda",
         dtype=torch.float32,
-        verbose=2,  # If your implementation supports it
     )
     
     # Monkey-patch the fit method to print iteration details
