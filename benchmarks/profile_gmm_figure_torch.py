@@ -39,6 +39,9 @@ def measure_baseline_multiple(n_samples=10000, n_dims=100, n_components=5,
     """Measure baseline wall-time across multiple runs with different data."""
     
     times = []
+    all_means = []
+    all_weights = []
+    
     for run in range(num_runs):
         # Generate NEW random data for each run with different seed
         torch.manual_seed(42 + run)
@@ -61,12 +64,42 @@ def measure_baseline_multiple(n_samples=10000, n_dims=100, n_components=5,
         # Measure
         t_run = _wall_time_fit(gmm, X_run)
         times.append(t_run)
+        
+        # Store parameters
+        all_means.append(gmm.means_.cpu().numpy().copy())
+        all_weights.append(gmm.weights_.cpu().numpy().copy())
+        
+        # Print convergence info for this run
+        print(f"\n    Run {run+1}: converged={gmm.converged_}, n_iter={gmm.n_iter_}, time={t_run:.6f}s")
+        print(f"    Weights: {gmm.weights_.cpu().numpy()}")
+        if n_components <= 5:  # Only print means for small K
+            print(f"    Means (first component): {gmm.means_[0][:5].cpu().numpy()}...")  # First 5 dims only
+    
+    # Compute statistics across runs
+    all_means = np.array(all_means)  # shape: (num_runs, K, D)
+    all_weights = np.array(all_weights)  # shape: (num_runs, K)
+    
+    mean_weights = np.mean(all_weights, axis=0)
+    std_weights = np.std(all_weights, axis=0)
+    mean_means = np.mean(all_means, axis=0)  # shape: (K, D)
+    std_means = np.std(all_means, axis=0)  # shape: (K, D)
+    
+    print(f"\n    === Summary across {num_runs} runs ===")
+    print(f"    Mean weights: {mean_weights}")
+    print(f"    Std weights:  {std_weights}")
+    if n_components <= 5:
+        print(f"    Mean of means (comp 0, first 5 dims): {mean_means[0][:5]}")
+        print(f"    Std of means (comp 0, first 5 dims):  {std_means[0][:5]}")
+    print(f"    Max std across all mean components: {np.max(std_means):.6f}")
+    print()
     
     return {
         "mean": float(np.mean(times)),
         "std": float(np.std(times)),
         "min": float(np.min(times)),
         "max": float(np.max(times)),
+        "param_std_weights": float(np.mean(std_weights)),
+        "param_std_means": float(np.max(std_means)),
     }
 
 if __name__ == "__main__":
@@ -105,6 +138,8 @@ if __name__ == "__main__":
                     "std_time_s": stats["std"],
                     "min_time_s": stats["min"],
                     "max_time_s": stats["max"],
+                    "param_std_weights": stats["param_std_weights"],
+                    "param_std_means_max": stats["param_std_means"],
                 })
                 
                 print(f" mean={stats['mean']:.6f} s ± {stats['std']:.6f} s")
