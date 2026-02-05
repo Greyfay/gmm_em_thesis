@@ -35,6 +35,11 @@ torch.set_default_dtype(torch.float64)
 COVARIANCE_TYPE = ["full", "tied", "diag", "spherical"]
 
 
+def _random_seed():
+    """Generate a random seed between 1 and 1000."""
+    return np.random.default_rng().integers(1, 1001)
+
+
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
@@ -119,7 +124,7 @@ def _naive_lmvnpdf_diag(X: np.ndarray, means: np.ndarray, covars_diag: np.ndarra
 
 
 def test_torch_log_probabilities_match_naive_diag_reference():
-    rng = np.random.RandomState(0)
+    rng = np.random.RandomState(_random_seed())
     n_samples, n_features, n_components = 500, 2, 2
 
     means = rng.rand(n_components, n_features)
@@ -162,7 +167,7 @@ def test_torch_log_probabilities_match_naive_diag_reference():
 # ---------------------------------------------------------------------
 @pytest.mark.parametrize("cov_type", COVARIANCE_TYPE)
 def test_torch_log_prob_matches_sklearn_oracle(cov_type):
-    rng = np.random.RandomState(11)
+    rng = np.random.RandomState(_random_seed())
     N, K, D = 150, 3, 4
 
     X = rng.randn(N, D)
@@ -185,7 +190,7 @@ def test_torch_log_prob_matches_sklearn_oracle(cov_type):
 # ---------------------------------------------------------------------
 @pytest.mark.parametrize("cov_type", COVARIANCE_TYPE)
 def test_torch_log_likelihood_matches_sklearn_oracle(cov_type):
-    rng = np.random.RandomState(13)
+    rng = np.random.RandomState(_random_seed())
     N, K, D = 200, 4, 3
 
     X = rng.randn(N, D)
@@ -216,7 +221,7 @@ def test_torch_log_likelihood_matches_sklearn_oracle(cov_type):
 # ---------------------------------------------------------------------
 @pytest.mark.parametrize("cov_type", COVARIANCE_TYPE)
 def test_torch_responsibilities_are_normalized_and_match_sklearn_softmax(cov_type):
-    rng = np.random.RandomState(0)
+    rng = np.random.RandomState(_random_seed())
     N, K, D = 200, 3, 4
 
     X = rng.randn(N, D)
@@ -246,7 +251,7 @@ def test_torch_responsibilities_are_normalized_and_match_sklearn_softmax(cov_typ
 # ---------------------------------------------------------------------
 @pytest.mark.parametrize("cov_type", COVARIANCE_TYPE)
 def test_torch_m_step_matches_sklearn_estimate_gaussian_parameters(cov_type):
-    rng = np.random.RandomState(2)
+    rng = np.random.RandomState(_random_seed())
     N, K, D = 300, 4, 5
     reg_covar = 1e-6
 
@@ -275,7 +280,7 @@ def test_torch_m_step_matches_sklearn_estimate_gaussian_parameters(cov_type):
 # ---------------------------------------------------------------------
 @pytest.mark.parametrize("cov_type", COVARIANCE_TYPE)
 def test_torch_covariance_precision_cholesky_consistency(cov_type):
-    rng = np.random.RandomState(3)
+    rng = np.random.RandomState(_random_seed())
     N, K, D = 400, 3, 4
     reg_covar = 1e-6
 
@@ -313,7 +318,7 @@ def test_torch_covariance_precision_cholesky_consistency(cov_type):
 # ---------------------------------------------------------------------
 @pytest.mark.parametrize("cov_type", COVARIANCE_TYPE)
 def test_torch_covariances_produce_correct_log_det_via_sklearn_helpers(cov_type):
-    rng = np.random.RandomState(4)
+    rng = np.random.RandomState(_random_seed())
     N, K, D = 300, 3, 4
     reg_covar = 1e-6
 
@@ -350,7 +355,7 @@ def test_torch_covariances_produce_correct_log_det_via_sklearn_helpers(cov_type)
 # ---------------------------------------------------------------------
 @pytest.mark.parametrize("cov_type", COVARIANCE_TYPE)
 def test_torch_precision_cholesky_matches_sklearn_precision(cov_type):
-    rng = np.random.RandomState(5)
+    rng = np.random.RandomState(_random_seed())
     K, D = 4, 3
     cov = _random_cov(rng, K, D, cov_type, reg=1e-6)
 
@@ -379,7 +384,7 @@ def test_torch_precision_cholesky_matches_sklearn_precision(cov_type):
 # ---------------------------------------------------------------------
 @pytest.mark.parametrize("cov_type", ["full", "tied"])
 def test_log_prob_terms_full_tied(cov_type):
-    rng = np.random.RandomState(6)
+    rng = np.random.RandomState(_random_seed())
     N, K, D = 50, 3, 4
     X = rng.randn(N, D)
     means = rng.randn(K, D)
@@ -417,7 +422,7 @@ def test_log_prob_terms_full_tied(cov_type):
 # ---------------------------------------------------------------------
 @pytest.mark.parametrize("cov_type", COVARIANCE_TYPE)
 def test_sufficient_statistics_covariance_identities(cov_type):
-    rng = np.random.RandomState(7)
+    rng = np.random.RandomState(_random_seed())
     N, K, D = 200, 3, 4
     reg_covar = 1e-6
 
@@ -466,7 +471,7 @@ def test_sufficient_statistics_covariance_identities(cov_type):
 # ---------------------------------------------------------------------
 @pytest.mark.parametrize("cov_type", ["full", "tied"])
 def test_whitening_identity_matches_mahalanobis(cov_type):
-    rng = np.random.RandomState(14)
+    rng = np.random.RandomState(_random_seed())
     N, K, D = 128, 3, 5
 
     X = rng.randn(N, D)
@@ -500,7 +505,7 @@ def test_whitening_identity_matches_mahalanobis(cov_type):
 # 5h) Cross covariance-type identities (full/diag/tied/spherical)
 # ---------------------------------------------------------------------
 def test_cross_covariance_type_identities():
-    rng = np.random.RandomState(12)
+    rng = np.random.RandomState(_random_seed())
     N, K, D = 250, 4, 5
     reg_covar = 1e-6
 
@@ -555,7 +560,7 @@ def test_cross_covariance_type_identities():
 # ---------------------------------------------------------------------
 @pytest.mark.parametrize("cov_type", COVARIANCE_TYPE)
 def test_label_switching_invariance(cov_type):
-    rng = np.random.RandomState(8)
+    rng = np.random.RandomState(_random_seed())
     N, K, D = 120, 4, 3
 
     X = rng.randn(N, D)
@@ -597,7 +602,7 @@ def test_label_switching_invariance(cov_type):
 # ---------------------------------------------------------------------
 @pytest.mark.parametrize("cov_type", COVARIANCE_TYPE)
 def test_degenerate_data_requires_regularization_for_finite_numbers(cov_type):
-    rng = np.random.RandomState(0)
+    rng = np.random.RandomState(_random_seed())
     n_samples, n_features = 10, 5
     K = n_samples  # nasty case like official test
 
@@ -629,7 +634,7 @@ def test_degenerate_data_requires_regularization_for_finite_numbers(cov_type):
 # ---------------------------------------------------------------------
 @pytest.mark.parametrize("cov_type", COVARIANCE_TYPE)
 def test_torch_em_monotonic_likelihood_like_official(cov_type):
-    rng = np.random.RandomState(42)
+    rng = np.random.RandomState(_random_seed())
     N, K, D = 500, 3, 2
     reg_covar = 1e-6
 
@@ -660,7 +665,7 @@ def test_torch_em_monotonic_likelihood_like_official(cov_type):
 @pytest.mark.parametrize("cov_type", COVARIANCE_TYPE)
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_cuda_parity_logprob_and_resp(cov_type):
-    rng = np.random.RandomState(123)
+    rng = np.random.RandomState(_random_seed())
     N, K, D = 128, 3, 4
 
     X = rng.randn(N, D)
@@ -834,7 +839,7 @@ def test_reproducibility_same_seed_same_outputs():
 
 @pytest.mark.parametrize("cov_type", COVARIANCE_TYPE)
 def test_empirical_kl_divergence_matches_sklearn(cov_type):
-    rng = np.random.RandomState(21)
+    rng = np.random.RandomState(_random_seed())
     N_samples = 5000
     K, D = 4, 3
 
@@ -886,3 +891,135 @@ def test_empirical_kl_divergence_matches_sklearn(cov_type):
     # KL estimate (will now be extremely close to 0)
     kl_empirical = float(np.mean(ll_sk - ll_t))
     assert abs(kl_empirical) < 1e-6
+
+
+# ---------------------------------------------------------------------
+# Script entry point: print KL divergence math when run directly
+# ---------------------------------------------------------------------
+def _format_array_stats(name: str, arr: np.ndarray) -> str:
+    return (
+        f"{name}: shape={arr.shape}, min={arr.min():.3e}, max={arr.max():.3e}, "
+        f"mean={arr.mean():.3e}, std={arr.std():.3e}"
+    )
+
+
+def _empirical_kl_demo(cov_type: str, seed: int = 21, n_samples: int = 5000, k: int = 4, d: int = 3) -> float:
+    rng = np.random.RandomState(seed)
+    means = rng.randn(k, d)
+    cov = _random_cov(rng, k, d, cov_type, reg=1e-6)
+    weights = rng.rand(k)
+    weights /= weights.sum()
+
+    component_assignments = rng.choice(k, size=n_samples, p=weights)
+    X_samples = np.zeros((n_samples, d))
+
+    for comp in range(k):
+        mask = component_assignments == comp
+        n_k = mask.sum()
+        if n_k == 0:
+            continue
+
+        mean_k = means[comp]
+        if cov_type == "full":
+            cov_k = cov[comp]
+        elif cov_type == "tied":
+            cov_k = cov
+        elif cov_type == "diag":
+            cov_k = np.diag(cov[comp])
+        elif cov_type == "spherical":
+            cov_k = cov[comp] * np.eye(d)
+        else:
+            raise ValueError(cov_type)
+
+        X_samples[mask] = rng.multivariate_normal(mean_k, cov_k, size=n_k)
+
+    # sklearn log P(x)
+    prec_chol_sk = _compute_precision_cholesky(cov, cov_type)
+    log_prob_sk = _sk_estimate_log_gaussian_prob(X_samples, means, prec_chol_sk, cov_type)
+    ll_sk = np.logaddexp.reduce(log_prob_sk + np.log(weights)[None, :], axis=1)
+
+    # torch log Q(x)
+    X_t = torch.from_numpy(X_samples)
+    means_t = torch.from_numpy(means)
+    cov_t = torch.from_numpy(cov)
+    weights_t = torch.from_numpy(weights)
+
+    log_prob_t = _torch_log_prob(X_t, means_t, cov_t, cov_type)
+    ll_t = torch.logsumexp(log_prob_t + torch.log(weights_t)[None, :], dim=1).cpu().numpy()
+
+    kl_empirical = float(np.mean(ll_sk - ll_t))
+
+    print("\n--- Empirical KL divergence demo ---")
+    print(f"cov_type={cov_type}, seed={seed}, N={n_samples}, K={k}, D={d}")
+    print("KL(P||Q) ≈ E_P[log P(x) - log Q(x)]")
+    print("Steps:")
+    print("  1) Sample x ~ P(x) using sklearn-style params")
+    print("  2) Compute log P(x) via sklearn kernels")
+    print("  3) Compute log Q(x) via torch kernels")
+    print("  4) Estimate KL as mean(log P(x) - log Q(x))")
+    print(_format_array_stats("log P(x)", ll_sk))
+    print(_format_array_stats("log Q(x)", ll_t))
+    print(f"KL estimate: {kl_empirical:.6e}\n")
+    return kl_empirical
+
+
+def _empirical_kl_silent(cov_type: str, seed: int, n_samples: int = 5000, k: int = 4, d: int = 3) -> float:
+    rng = np.random.RandomState(seed)
+    means = rng.randn(k, d)
+    cov = _random_cov(rng, k, d, cov_type, reg=1e-6)
+    weights = rng.rand(k)
+    weights /= weights.sum()
+
+    component_assignments = rng.choice(k, size=n_samples, p=weights)
+    X_samples = np.zeros((n_samples, d))
+
+    for comp in range(k):
+        mask = component_assignments == comp
+        n_k = mask.sum()
+        if n_k == 0:
+            continue
+
+        mean_k = means[comp]
+        if cov_type == "full":
+            cov_k = cov[comp]
+        elif cov_type == "tied":
+            cov_k = cov
+        elif cov_type == "diag":
+            cov_k = np.diag(cov[comp])
+        elif cov_type == "spherical":
+            cov_k = cov[comp] * np.eye(d)
+        else:
+            raise ValueError(cov_type)
+
+        X_samples[mask] = rng.multivariate_normal(mean_k, cov_k, size=n_k)
+
+    prec_chol_sk = _compute_precision_cholesky(cov, cov_type)
+    log_prob_sk = _sk_estimate_log_gaussian_prob(X_samples, means, prec_chol_sk, cov_type)
+    ll_sk = np.logaddexp.reduce(log_prob_sk + np.log(weights)[None, :], axis=1)
+
+    X_t = torch.from_numpy(X_samples)
+    means_t = torch.from_numpy(means)
+    cov_t = torch.from_numpy(cov)
+    weights_t = torch.from_numpy(weights)
+
+    log_prob_t = _torch_log_prob(X_t, means_t, cov_t, cov_type)
+    ll_t = torch.logsumexp(log_prob_t + torch.log(weights_t)[None, :], dim=1).cpu().numpy()
+
+    return float(np.mean(ll_sk - ll_t))
+
+
+if __name__ == "__main__":
+    rng = np.random.RandomState(None)
+    seeds = rng.choice(np.arange(1, 101), size=10, replace=False)
+
+    kl_by_cov = {cov_type: [] for cov_type in COVARIANCE_TYPE}
+
+    for idx, seed in enumerate(seeds, start=1):
+        print(f"\n=== Iteration {idx}/10 (seed={int(seed)}) ===")
+        for cov_type in COVARIANCE_TYPE:
+            kl_by_cov[cov_type].append(_empirical_kl_demo(cov_type, seed=int(seed)))
+
+    print("\n--- Final averaged KL results (10 seeds) ---")
+    for cov_type in COVARIANCE_TYPE:
+        vals = np.asarray(kl_by_cov[cov_type], dtype=np.float64)
+        print(f"{cov_type}: mean={vals.mean():.6e}, std={vals.std(ddof=1):.6e}")

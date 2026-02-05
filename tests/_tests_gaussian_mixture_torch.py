@@ -10,14 +10,20 @@ import torch
 import pytest
 
 from implementation._torch_gmm_em import (
-    _expectation_step,
-    _maximization_step,
-    _estimate_log_gaussian_prob_diag,
-    _estimate_log_gaussian_prob_full,
-    _estimate_log_gaussian_prob_tied,
-    _estimate_log_gaussian_prob_spherical,
-    compute_precision
+    _expectation_step_precchol,
+    _maximization_step as _maximization_step_precchol,
+    _estimate_log_gaussian_prob_diag_precchol,
+    _estimate_log_gaussian_prob_full_precchol,
+    _estimate_log_gaussian_prob_tied_precchol,
+    _estimate_log_gaussian_prob_spherical_precchol,
+    _compute_precisions_cholesky,
+    _compute_precisions,
 )
+
+
+def _random_seed():
+    """Generate a random seed between 1 and 1000."""
+    return np.random.default_rng().integers(1, 1001)
 
 
 class RandomData:
@@ -116,23 +122,75 @@ def log_likelihood_mean(X, means, cov, weights, cov_type):
     N, D = X.shape
     K, _ = means.shape
 
+    prec_chol = _compute_precisions_cholesky(cov, cov_type)
+
     if cov_type == "diag":
-        log_prob = _estimate_log_gaussian_prob_diag(X, means, cov)
+        log_prob = _estimate_log_gaussian_prob_diag_precchol(X, means, prec_chol)
     elif cov_type == "spherical":
-        log_prob = _estimate_log_gaussian_prob_spherical(X, means, cov)
+        log_prob = _estimate_log_gaussian_prob_spherical_precchol(X, means, prec_chol)
     elif cov_type == "tied":
-        log_prob = _estimate_log_gaussian_prob_tied(X, means, cov)
+        log_prob = _estimate_log_gaussian_prob_tied_precchol(X, means, prec_chol)
     else:
-        log_prob = _estimate_log_gaussian_prob_full(X, means, cov)
+        log_prob = _estimate_log_gaussian_prob_full_precchol(X, means, prec_chol)
 
     log_weights = torch.log(weights).unsqueeze(0)  # (1,K)
     return torch.logsumexp(log_prob + log_weights, dim=1).mean()
 
 
+def _expectation_step(X, means, cov, weights, cov_type):
+    """Wrapper that accepts covariances and returns responsibilities."""
+    prec_chol = _compute_precisions_cholesky(cov, cov_type)
+    _, log_resp = _expectation_step_precchol(X, means, prec_chol, weights, cov_type)
+    return log_resp.exp()
+
+
+def _maximization_step(X, means, cov, weights, resp, cov_type, reg_covar: float = 1e-6):
+    """Wrapper that accepts responsibilities and calls log-resp M-step."""
+    tiny = torch.finfo(resp.dtype).tiny
+    log_resp = torch.log(resp.clamp_min(tiny))
+    return _maximization_step_precchol(X, means, cov, weights, log_resp, cov_type, reg_covar=reg_covar)
+
+
+def compute_precision(cov, covariance_type):
+    """Compute precision (inverse covariance) from covariance."""
+    prec_chol = _compute_precisions_cholesky(cov, covariance_type)
+    return _compute_precisions(prec_chol, covariance_type)
+
+
+def test_different_seeds_generate_different_samples_printed():
+    """Small, printed check that different RNG seeds yield different samples."""
+    rng_seeds = np.random.default_rng()
+    seed_a, seed_b = rng_seeds.choice(np.arange(1, 1001), size=2, replace=False)
+    n_samples, n_components, n_features = 8, 2, 2
+
+    rng_a = np.random.RandomState(int(seed_a))
+    rng_b = np.random.RandomState(int(seed_b))
+
+    data_a = RandomData(
+        rng_a,
+        n_samples=n_samples,
+        n_components=n_components,
+        n_features=n_features,
+        covariance_type="diag",
+    )
+    data_b = RandomData(
+        rng_b,
+        n_samples=n_samples,
+        n_components=n_components,
+        n_features=n_features,
+        covariance_type="diag",
+    )
+
+    print(f"\n[seed-diff] seed_a={int(seed_a)} samples:\n", data_a.X)
+    print(f"[seed-diff] seed_b={int(seed_b)} samples:\n", data_b.X)
+
+    assert not np.allclose(data_a.X, data_b.X), "Different seeds should produce different samples"
+
+
 @pytest.mark.parametrize("covariance_type", ["diag", "spherical", "tied", "full"])
 def test_monotonic_likelihood_all_cov_types(covariance_type):
     """Test that EM does not decrease mean log-likelihood each iteration."""
-    rng = np.random.RandomState(0)
+    rng = np.random.RandomState(_random_seed())
     rand_data = RandomData(rng, n_samples=200, n_components=2, n_features=2, covariance_type=covariance_type)
 
     X = torch.from_numpy(rand_data.X).float()
@@ -195,7 +253,7 @@ def test_monotonic_likelihood_all_cov_types(covariance_type):
 @pytest.mark.parametrize("covariance_type", ["diag", "spherical", "tied", "full"])
 def test_responsibilities_sum_to_one(covariance_type):
     """Test that responsibilities sum to 1 across clusters."""
-    rng = np.random.RandomState(1)
+    rng = np.random.RandomState(_random_seed())
     rand_data = RandomData(rng, n_samples=50, n_components=3, n_features=2, covariance_type=covariance_type)
 
     X = torch.from_numpy(rand_data.X).float()
@@ -210,7 +268,7 @@ def test_responsibilities_sum_to_one(covariance_type):
 @pytest.mark.parametrize("covariance_type", ["diag", "spherical", "tied", "full"])
 def test_precision_computation(covariance_type):
     """Test that precision (inverse covariance) is computed correctly."""
-    rng = np.random.RandomState(42)
+    rng = np.random.RandomState(_random_seed())
     K, D = 3, 2
     
     # Generate covariance based on type
@@ -306,7 +364,7 @@ def test_precision_properties():
     
 def test_single_component():
     """Test K=1 (single Gaussian, no mixture)."""
-    rng = np.random.RandomState(42)
+    rng = np.random.RandomState(_random_seed())
     rand_data = RandomData(rng, n_samples=100, n_components=1, n_features=3, covariance_type="diag")
     
     X = torch.from_numpy(rand_data.X).float()
@@ -322,7 +380,7 @@ def test_single_component():
 
 def test_high_dimensional():
     """Test with D >> K (many features, few components)."""
-    rng = np.random.RandomState(42)
+    rng = np.random.RandomState(_random_seed())
     rand_data = RandomData(rng, n_samples=100, n_components=2, n_features=20, covariance_type="diag")
     
     X = torch.from_numpy(rand_data.X).float()
@@ -405,7 +463,7 @@ def test_identical_samples():
 @pytest.mark.parametrize("covariance_type", ["diag", "spherical", "tied", "full"])
 def test_extreme_separations(covariance_type):
     """Test with clusters very far apart."""
-    rng = np.random.RandomState(42)
+    rng = np.random.RandomState(_random_seed())
     
     # Two clusters 1000 units apart
     X1 = torch.randn(100, 2, dtype=torch.float32) * 0.1 + torch.tensor([0.0, 0.0])
