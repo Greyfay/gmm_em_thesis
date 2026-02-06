@@ -13,6 +13,16 @@ Key alignment choices:
   followed by a few Lloyd iterations.
 - Supports 'k-means++' init explicitly.
 - Supports user-supplied init: weights_init, means_init, precisions_init.
+- Supports sklearn-based initialization: 'scikit_kmeans' and 'scikit_random' to match
+  sklearn's initialization exactly, helping align results between implementations.
+
+Initialization options:
+- 'kmeans': PyTorch k-means++ followed by Lloyd iterations
+- 'k-means++': PyTorch k-means++ seeding only (no refinement)
+- 'random': PyTorch random uniform responsibilities
+- 'random_from_data': Random samples from data as initial means
+- 'scikit_kmeans': Use sklearn's KMeans for initialization (matches sklearn exactly)
+- 'scikit_random': Use sklearn's random initialization (matches sklearn exactly)
 
 Covariance storage formats:
 - spherical: cov shape (K,)              # one variance per component
@@ -37,7 +47,9 @@ import math
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
+import numpy as np
 import torch
+from sklearn.cluster import KMeans, kmeans_plusplus
 
 
 # ---------------------------
@@ -350,6 +362,37 @@ def _kmeans_plus_plus_init_centroids(X: torch.Tensor, K: int) -> torch.Tensor:
 
 
 @torch.no_grad()
+def _initialize_from_sklearn(X: torch.Tensor, K: int, method: str) -> torch.Tensor:
+    """Use sklearn's initialization to create resp matrix. Returns log_resp (N,K)."""
+    N, D = X.shape
+    device, dtype = X.device, X.dtype
+    
+    # Convert to numpy for sklearn
+    X_np = X.cpu().numpy()
+    
+    resp = np.zeros((N, K), dtype=np.float64)
+    
+    if method == "scikit_kmeans":
+        # Use sklearn's KMeans initialization
+        label = KMeans(
+            n_clusters=K, 
+            n_init=1, 
+            random_state=None
+        ).fit(X_np).labels_
+        resp[np.arange(N), label] = 1
+    elif method == "scikit_random":
+        # Use sklearn's random initialization
+        resp = np.random.uniform(size=(N, K))
+        resp /= resp.sum(axis=1)[:, np.newaxis]
+    else:
+        raise ValueError(f"Unknown sklearn init method: {method}")
+    
+    # Convert back to torch
+    resp_torch = torch.from_numpy(resp).to(device=device, dtype=dtype)
+    return _safe_log(resp_torch)
+
+
+@torch.no_grad()
 def _kmeans_lloyd_with_init(
     X: torch.Tensor,
     centroids: torch.Tensor,
@@ -427,9 +470,9 @@ class TorchGaussianMixture:
             raise ValueError("max_iter must be positive")
         if n_init <= 0:
             raise ValueError("n_init must be positive")
-        if init_params not in ("kmeans", "k-means++", "random", "random_from_data"):
+        if init_params not in ("kmeans", "k-means++", "random", "random_from_data", "scikit_random", "scikit_kmeans"):
             raise ValueError(
-                "init_params must be one of: 'kmeans', 'k-means++', 'random', 'random_from_data'"
+                "init_params must be one of: 'kmeans', 'k-means++', 'random', 'random_from_data', 'scikit_random', 'scikit_kmeans'"
             )
 
         self.n_components = n_components
@@ -614,6 +657,10 @@ class TorchGaussianMixture:
             resp = torch.zeros((N, K), device=X.device, dtype=X.dtype)
             resp[torch.arange(N, device=X.device), labels] = 1.0
             log_resp = _safe_log(resp)
+            return self._initialize_from_log_resp(X, log_resp)
+
+        if self.init_params in ("scikit_kmeans", "scikit_random"):
+            log_resp = _initialize_from_sklearn(X, K, self.init_params)
             return self._initialize_from_log_resp(X, log_resp)
 
         # random_from_data
