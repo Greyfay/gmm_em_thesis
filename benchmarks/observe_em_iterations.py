@@ -73,7 +73,11 @@ def observe_sklearn():
     print(f"\nData after kmeans initialization (first 5 samples):\n{X[:5]}")
     print()
     
-    # Reorder components for consistent comparison
+    print(f"Initialized parameters after kmeans:")
+    print(f"  Means (shape {gmm.means_.shape}):\n{gmm.means_}")
+    print(f"\n  Weights: {gmm.weights_}")
+    print(f"\n  Covariances (first component shape {gmm.covariances_[0].shape})")
+    print()
     sorted_weights, sorted_means, _ = reorder_gmm_components(
         gmm.weights_, gmm.means_, gmm.covariances_
     )
@@ -134,7 +138,11 @@ def observe_torch():
     print(f"\nData after kmeans initialization (first 5 samples):\n{X[:5].cpu().numpy()}")
     print()
     
-    # Reorder components for consistent comparison
+    print(f"Initialized parameters after kmeans:")
+    print(f"  Means (shape {gmm.means_.shape}):\n{gmm.means_.cpu().numpy()}")
+    print(f"\n  Weights: {gmm.weights_.cpu().numpy()}")
+    print(f"\n  Covariances (first component shape {gmm.covariances_[0].shape})")
+    print()
     sorted_weights, sorted_means, _ = reorder_gmm_components(
         gmm.weights_, gmm.means_, gmm.covariances_ if hasattr(gmm, 'covariances_') else None
     )
