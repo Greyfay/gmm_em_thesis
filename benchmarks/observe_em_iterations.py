@@ -52,7 +52,7 @@ def observe_sklearn():
     X = np.random.randn(n_samples, n_dims).astype(np.float32)
     
     print(f"\nConfiguration: N={n_samples}, D={n_dims}, K={n_components}")
-    print(f"Covariance: full, max_iter=100, init=random (fixed seed)")
+    print(f"Covariance: full, max_iter=100, init=kmeans (fixed seed)")
     print(f"\nRandom data (first 5 samples):\n{X[:5]}")
     print()
     
@@ -61,7 +61,7 @@ def observe_sklearn():
         covariance_type="full",
         max_iter=100,
         n_init=1,
-        init_params="random",  # Use random init with fixed seed
+        init_params="kmeans",  # Use kmeans init with fixed seed
         tol=1e-3,
         random_state=99,  # Fixed seed for reproducibility
         verbose=2,
@@ -104,7 +104,7 @@ def observe_torch():
     X = torch.from_numpy(X_np).to(device="cuda", dtype=torch.float32)
     
     print(f"\nConfiguration: N={n_samples}, D={n_dims}, K={n_components}")
-    print(f"Covariance: full, max_iter=100, init=random (fixed seed)")
+    print(f"Covariance: full, max_iter=100, init=kmeans (fixed seed)")
     print(f"\nRandom data (first 5 samples):\n{X[:5].cpu().numpy()}")
     print()
     
@@ -113,7 +113,7 @@ def observe_torch():
         covariance_type="full",
         max_iter=100,
         n_init=1,
-        init_params="random",
+        init_params="kmeans",
         tol=1e-3,
         device="cuda",
         dtype=torch.float32,
