@@ -39,26 +39,21 @@ def reorder_gmm_components(weights, means, covariances=None):
 def observe_sklearn():
     """Observe scikit-learn EM iterations with fixed initialization."""
     print("="*70)
-    print("SCIKIT-LEARN GMM - Observing EM Iterations (HARDCODED DATA)")
+    print("SCIKIT-LEARN GMM - Observing EM Iterations (RANDOM DATA)")
     print("="*70)
     
-    # Small hardcoded example
+    # Small random example with fixed seed
+    np.random.seed(42)
     n_samples = 20
     n_dims = 2
     n_components = 2
     
-    # Hardcoded data: 20 samples, 2 dimensions
-    # First 10 samples cluster around (0, 0), next 10 around (5, 5)
-    X = np.array([
-        [0.1, 0.2], [0.3, -0.1], [-0.2, 0.4], [0.5, 0.3], [-0.1, -0.3],
-        [0.2, 0.1], [-0.4, 0.2], [0.3, 0.5], [-0.2, -0.1], [0.1, -0.2],
-        [5.1, 5.2], [4.8, 5.1], [5.3, 4.9], [4.9, 5.3], [5.2, 4.8],
-        [5.0, 5.0], [4.7, 5.2], [5.4, 4.7], [4.8, 4.9], [5.1, 5.1]
-    ], dtype=np.float32)
+    # Generate random data with fixed seed
+    X = np.random.randn(n_samples, n_dims).astype(np.float32)
     
     print(f"\nConfiguration: N={n_samples}, D={n_dims}, K={n_components}")
     print(f"Covariance: full, max_iter=20, init=random (fixed seed)")
-    print(f"\nHardcoded data (first 5 samples):\n{X[:5]}")
+    print(f"\nRandom data (first 5 samples):\n{X[:5]}")
     print()
     
     gmm = GaussianMixture(
@@ -95,26 +90,22 @@ def observe_sklearn():
 def observe_torch():
     """Observe PyTorch EM iterations with fixed initialization."""
     print("="*70)
-    print("PYTORCH GMM - Observing EM Iterations (HARDCODED DATA)")
+    print("PYTORCH GMM - Observing EM Iterations (RANDOM DATA)")
     print("="*70)
     
-    # Same configuration as scikit
+    # Same configuration as scikit with same random seed
+    np.random.seed(42)
     n_samples = 20
     n_dims = 2
     n_components = 2
     
-    # Hardcoded data: same as sklearn version
-    X_np = np.array([
-        [0.1, 0.2], [0.3, -0.1], [-0.2, 0.4], [0.5, 0.3], [-0.1, -0.3],
-        [0.2, 0.1], [-0.4, 0.2], [0.3, 0.5], [-0.2, -0.1], [0.1, -0.2],
-        [5.1, 5.2], [4.8, 5.1], [5.3, 4.9], [4.9, 5.3], [5.2, 4.8],
-        [5.0, 5.0], [4.7, 5.2], [5.4, 4.7], [4.8, 4.9], [5.1, 5.1]
-    ], dtype=np.float32)
+    # Generate random data with same seed as sklearn
+    X_np = np.random.randn(n_samples, n_dims).astype(np.float32)
     X = torch.from_numpy(X_np).to(device="cuda", dtype=torch.float32)
     
     print(f"\nConfiguration: N={n_samples}, D={n_dims}, K={n_components}")
     print(f"Covariance: full, max_iter=20, init=random (fixed seed)")
-    print(f"\nHardcoded data (first 5 samples):\n{X[:5].cpu().numpy()}")
+    print(f"\nRandom data (first 5 samples):\n{X[:5].cpu().numpy()}")
     print()
     
     gmm = TorchGaussianMixture(
