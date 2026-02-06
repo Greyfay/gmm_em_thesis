@@ -70,6 +70,9 @@ def observe_sklearn():
     
     gmm.fit(X)
     
+    print(f"\nData after kmeans initialization (first 5 samples):\n{X[:5]}")
+    print()
+    
     # Reorder components for consistent comparison
     sorted_weights, sorted_means, _ = reorder_gmm_components(
         gmm.weights_, gmm.means_, gmm.covariances_
@@ -127,6 +130,9 @@ def observe_torch():
     
     # Fit the model
     gmm.fit(X)
+    
+    print(f"\nData after kmeans initialization (first 5 samples):\n{X[:5].cpu().numpy()}")
+    print()
     
     # Reorder components for consistent comparison
     sorted_weights, sorted_means, _ = reorder_gmm_components(
