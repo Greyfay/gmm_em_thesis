@@ -377,7 +377,7 @@ def _initialize_from_sklearn(X: torch.Tensor, K: int, method: str) -> torch.Tens
         label = KMeans(
             n_clusters=K, 
             n_init=1, 
-            random_state=None
+            random_state=99,  # Fixed seed for reproducibility, just for now
         ).fit(X_np).labels_
         resp[np.arange(N), label] = 1
     elif method == "scikit_random":
