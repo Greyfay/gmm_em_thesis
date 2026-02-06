@@ -33,7 +33,7 @@ def observe_sklearn():
     
     print(f"\nConfiguration: N={n_samples}, D={n_dims}, K={n_components}")
     print(f"Covariance: full, max_iter=20, init=kmeans")
-    print(f"\nHardcoded data (first 5 samples):\n{X[:5]}")
+    print(f"\nHardcoded data (all {n_samples} samples):\n{X}")
     print()
     
     gmm = GaussianMixture(
@@ -86,7 +86,7 @@ def observe_torch():
     
     print(f"\nConfiguration: N={n_samples}, D={n_dims}, K={n_components}")
     print(f"Covariance: full, max_iter=20, init=kmeans")
-    print(f"\nHardcoded data (first 5 samples):\n{X[:5].cpu().numpy()}")
+    print(f"\nHardcoded data (all {n_samples} samples):\n{X.cpu().numpy()}")
     print()
     
     gmm = TorchGaussianMixture(
