@@ -1,15 +1,15 @@
-    """Observe EM parameter updates iteration-by-iteration."""
+"""Observe EM parameter updates iteration-by-iteration."""
 
-    import os
-    import sys
-    import numpy as np
-    import torch
-    from sklearn.mixture import GaussianMixture
+import os
+import sys
+import numpy as np
+import torch
+from sklearn.mixture import GaussianMixture
 
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from implementation._torch_gmm_em import TorchGaussianMixture
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from implementation._torch_gmm_em import TorchGaussianMixture
 
-    def observe_sklearn():
+def observe_sklearn():
     """Observe scikit-learn EM iterations with fixed initialization."""
     print("="*70)
     print("SCIKIT-LEARN GMM - Observing EM Iterations (FIXED INITIALIZATION)")
@@ -46,22 +46,23 @@
         random_state=99,  # Fixed seed for reproducibility
         verbose=2,
         verbose_interval=1,
-        
-        gmm.fit(X)
-        
-        print(f"\n{'='*70}")
-        print(f"Final Results:")
-        print(f"  Converged: {gmm.converged_}")
-        print(f"  Iterations: {gmm.n_iter_}")
-        print(f"  Final log-likelihood: {gmm.lower_bound_:.6f}")
-        print(f"\n  Final Weights: {gmm.weights_}")
-        print(f"\n  Final Means (first 5 dims of each component):")
-        for k in range(n_components):
-            print(f"    Component {k}: {gmm.means_[k][:5]}")
-        print("="*70 + "\n")
+    )
+    
+    gmm.fit(X)
+    
+    print(f"\n{'='*70}")
+    print(f"Final Results:")
+    print(f"  Converged: {gmm.converged_}")
+    print(f"  Iterations: {gmm.n_iter_}")
+    print(f"  Final log-likelihood: {gmm.lower_bound_:.6f}")
+    print(f"\n  Final Weights: {gmm.weights_}")
+    print(f"\n  Final Means (first 5 dims of each component):")
+    for k in range(n_components):
+        print(f"    Component {k}: {gmm.means_[k][:5]}")
+    print("="*70 + "\n")
 
 
-    def observe_torch():
+def observe_torch():
     """Observe PyTorch EM iterations with fixed initialization."""
     print("="*70)
     print("PYTORCH GMM - Observing EM Iterations (FIXED INITIALIZATION)")
@@ -126,18 +127,19 @@
     print("\n  Comparison with scikit-learn:")
     print("  If the final means are similar, the implementations are equivalent.")
     print("  If they differ significantly, there may be algorithmic differences.")
+    print("="*70 + "\n")
 
 
-    if __name__ == "__main__":
-        # Run scikit-learn observation
-        observe_sklearn()
-        
-        print("\n" + "="*70)
-        print("="*70)
-        print("\n")
-        
-        # Run PyTorch observation
-        if torch.cuda.is_available():
-            observe_torch()
-        else:
-            print("CUDA not available - skipping PyTorch demonstration")
+if __name__ == "__main__":
+    # Run scikit-learn observation
+    observe_sklearn()
+    
+    print("\n" + "="*70)
+    print("="*70)
+    print("\n")
+    
+    # Run PyTorch observation
+    if torch.cuda.is_available():
+        observe_torch()
+    else:
+        print("CUDA not available - skipping PyTorch demonstration")
