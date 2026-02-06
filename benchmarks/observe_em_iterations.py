@@ -44,22 +44,22 @@ def observe_sklearn():
     
     # Small random example with fixed seed
     np.random.seed(42)
-    n_samples = 20
-    n_dims = 2
+    n_samples = 5000
+    n_dims = 20
     n_components = 2
     
     # Generate random data with fixed seed
     X = np.random.randn(n_samples, n_dims).astype(np.float32)
     
     print(f"\nConfiguration: N={n_samples}, D={n_dims}, K={n_components}")
-    print(f"Covariance: full, max_iter=20, init=random (fixed seed)")
+    print(f"Covariance: full, max_iter=100, init=random (fixed seed)")
     print(f"\nRandom data (first 5 samples):\n{X[:5]}")
     print()
     
     gmm = GaussianMixture(
         n_components=n_components,
         covariance_type="full",
-        max_iter=20,
+        max_iter=100,
         n_init=1,
         init_params="random",  # Use random init with fixed seed
         tol=1e-3,
@@ -95,8 +95,8 @@ def observe_torch():
     
     # Same configuration as scikit with same random seed
     np.random.seed(42)
-    n_samples = 20
-    n_dims = 2
+    n_samples = 5000
+    n_dims = 20
     n_components = 2
     
     # Generate random data with same seed as sklearn
@@ -104,14 +104,14 @@ def observe_torch():
     X = torch.from_numpy(X_np).to(device="cuda", dtype=torch.float32)
     
     print(f"\nConfiguration: N={n_samples}, D={n_dims}, K={n_components}")
-    print(f"Covariance: full, max_iter=20, init=random (fixed seed)")
+    print(f"Covariance: full, max_iter=100, init=random (fixed seed)")
     print(f"\nRandom data (first 5 samples):\n{X[:5].cpu().numpy()}")
     print()
     
     gmm = TorchGaussianMixture(
         n_components=n_components,
         covariance_type="full",
-        max_iter=20,
+        max_iter=100,
         n_init=1,
         init_params="random",
         tol=1e-3,
