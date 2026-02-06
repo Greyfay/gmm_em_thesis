@@ -52,7 +52,7 @@ def observe_sklearn():
     X = np.random.randn(n_samples, n_dims).astype(np.float32)
     
     print(f"\nConfiguration: N={n_samples}, D={n_dims}, K={n_components}")
-    print(f"Covariance: full, max_iter=100, init=kmeans (fixed seed)")
+    print(f"Covariance: full, max_iter=100, init=scikit_kmeans (fixed seed)")
     print(f"\nRandom data (first 5 samples):\n{X[:5]}")
     print()
     
@@ -120,7 +120,7 @@ def observe_torch():
         covariance_type="full",
         max_iter=100,
         n_init=1,
-        init_params="kmeans",
+        init_params="scikit_kmeans",
         tol=1e-3,
         device="cuda",
         dtype=torch.float32,
