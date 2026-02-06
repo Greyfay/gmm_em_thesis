@@ -16,21 +16,23 @@ def observe_sklearn():
     print("="*70)
     
     # Small hardcoded example
-    n_samples = 20
+    n_samples = 30
     n_dims = 2
     n_components = 2
     
-    # Hardcoded data: 20 samples, 2 dimensions
-    # First 10 samples cluster around (0, 0), next 10 around (5, 5)
+    # Hardcoded data: 30 samples, 2 dimensions
+    # First 15 samples cluster around (0, 0), next 15 around (5, 5)
     X = np.array([
         [0.1, 0.2], [0.3, -0.1], [-0.2, 0.4], [0.5, 0.3], [-0.1, -0.3],
         [0.2, 0.1], [-0.4, 0.2], [0.3, 0.5], [-0.2, -0.1], [0.1, -0.2],
+        [0.4, -0.3], [-0.3, 0.1], [0.2, 0.4], [-0.1, 0.2], [0.3, 0.0],
         [5.1, 5.2], [4.8, 5.1], [5.3, 4.9], [4.9, 5.3], [5.2, 4.8],
-        [5.0, 5.0], [4.7, 5.2], [5.4, 4.7], [4.8, 4.9], [5.1, 5.1]
+        [5.0, 5.0], [4.7, 5.2], [5.4, 4.7], [4.8, 4.9], [5.1, 5.1],
+        [5.3, 5.3], [4.9, 4.8], [5.2, 5.1], [4.8, 5.3], [5.0, 4.9]
     ], dtype=np.float32)
     
     print(f"\nConfiguration: N={n_samples}, D={n_dims}, K={n_components}")
-    print(f"Covariance: full, max_iter=20, init=random (fixed seed)")
+    print(f"Covariance: full, max_iter=20, init=kmeans")
     print(f"\nHardcoded data (first 5 samples):\n{X[:5]}")
     print()
     
@@ -39,7 +41,7 @@ def observe_sklearn():
         covariance_type="full",
         max_iter=20,
         n_init=1,
-        init_params="random",  # Use random init with fixed seed
+        init_params="kmeans",
         tol=1e-3,
         random_state=99,  # Fixed seed for reproducibility
         verbose=2,
@@ -67,7 +69,7 @@ def observe_torch():
     print("="*70)
     
     # Same configuration as scikit
-    n_samples = 20
+    n_samples = 30
     n_dims = 2
     n_components = 2
     
@@ -75,13 +77,15 @@ def observe_torch():
     X_np = np.array([
         [0.1, 0.2], [0.3, -0.1], [-0.2, 0.4], [0.5, 0.3], [-0.1, -0.3],
         [0.2, 0.1], [-0.4, 0.2], [0.3, 0.5], [-0.2, -0.1], [0.1, -0.2],
+        [0.4, -0.3], [-0.3, 0.1], [0.2, 0.4], [-0.1, 0.2], [0.3, 0.0],
         [5.1, 5.2], [4.8, 5.1], [5.3, 4.9], [4.9, 5.3], [5.2, 4.8],
-        [5.0, 5.0], [4.7, 5.2], [5.4, 4.7], [4.8, 4.9], [5.1, 5.1]
+        [5.0, 5.0], [4.7, 5.2], [5.4, 4.7], [4.8, 4.9], [5.1, 5.1],
+        [5.3, 5.3], [4.9, 4.8], [5.2, 5.1], [4.8, 5.3], [5.0, 4.9]
     ], dtype=np.float32)
     X = torch.from_numpy(X_np).to(device="cuda", dtype=torch.float32)
     
     print(f"\nConfiguration: N={n_samples}, D={n_dims}, K={n_components}")
-    print(f"Covariance: full, max_iter=20, init=random (fixed seed)")
+    print(f"Covariance: full, max_iter=20, init=kmeans")
     print(f"\nHardcoded data (first 5 samples):\n{X[:5].cpu().numpy()}")
     print()
     
@@ -90,7 +94,7 @@ def observe_torch():
         covariance_type="full",
         max_iter=20,
         n_init=1,
-        init_params="random",
+        init_params="kmeans",
         tol=1e-3,
         device="cuda",
         dtype=torch.float32,
