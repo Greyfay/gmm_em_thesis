@@ -12,28 +12,26 @@ from implementation._torch_gmm_em import TorchGaussianMixture
 def observe_sklearn():
     """Observe scikit-learn EM iterations with fixed initialization."""
     print("="*70)
-    print("SCIKIT-LEARN GMM - Observing EM Iterations (FIXED INITIALIZATION)")
+    print("SCIKIT-LEARN GMM - Observing EM Iterations (HARDCODED DATA)")
     print("="*70)
     
-    # Moderate-sized example
-    np.random.seed(42)
-    n_samples = 5000
-    n_dims = 20
-    n_components = 3
+    # Small hardcoded example
+    n_samples = 20
+    n_dims = 2
+    n_components = 2
+    
+    # Hardcoded data: 20 samples, 2 dimensions
+    # First 10 samples cluster around (0, 0), next 10 around (5, 5)
+    X = np.array([
+        [0.1, 0.2], [0.3, -0.1], [-0.2, 0.4], [0.5, 0.3], [-0.1, -0.3],
+        [0.2, 0.1], [-0.4, 0.2], [0.3, 0.5], [-0.2, -0.1], [0.1, -0.2],
+        [5.1, 5.2], [4.8, 5.1], [5.3, 4.9], [4.9, 5.3], [5.2, 4.8],
+        [5.0, 5.0], [4.7, 5.2], [5.4, 4.7], [4.8, 4.9], [5.1, 5.1]
+    ], dtype=np.float32)
     
     print(f"\nConfiguration: N={n_samples}, D={n_dims}, K={n_components}")
-    print(f"Covariance: full, max_iter=20, init=random (fixed seed)\n")
-    
-    X = np.random.randn(n_samples, n_dims).astype(np.float32)
-    
-    # Create fixed initial means by sampling from data
-    np.random.seed(99)
-    init_indices = np.random.choice(n_samples, n_components, replace=False)
-    init_means = X[init_indices].copy()
-    
-    print(f"Initial Means (first 5 dims):")
-    for k in range(n_components):
-        print(f"  Component {k}: {init_means[k][:5]}")
+    print(f"Covariance: full, max_iter=20, init=random (fixed seed)")
+    print(f"\nHardcoded data (first 5 samples):\n{X[:5]}")
     print()
     
     gmm = GaussianMixture(
@@ -56,39 +54,35 @@ def observe_sklearn():
     print(f"  Iterations: {gmm.n_iter_}")
     print(f"  Final log-likelihood: {gmm.lower_bound_:.6f}")
     print(f"\n  Final Weights: {gmm.weights_}")
-    print(f"\n  Final Means (first 5 dims of each component):")
+    print(f"\n  Final Means (all dims):")
     for k in range(n_components):
-        print(f"    Component {k}: {gmm.means_[k][:5]}")
+        print(f"    Component {k}: {gmm.means_[k]}")
     print("="*70 + "\n")
 
 
 def observe_torch():
     """Observe PyTorch EM iterations with fixed initialization."""
     print("="*70)
-    print("PYTORCH GMM - Observing EM Iterations (FIXED INITIALIZATION)")
+    print("PYTORCH GMM - Observing EM Iterations (HARDCODED DATA)")
     print("="*70)
     
     # Same configuration as scikit
-    torch.manual_seed(42)
-    torch.cuda.manual_seed(42)
-    n_samples = 5000
-    n_dims = 20
-    n_components = 3
+    n_samples = 20
+    n_dims = 2
+    n_components = 2
+    
+    # Hardcoded data: same as sklearn version
+    X_np = np.array([
+        [0.1, 0.2], [0.3, -0.1], [-0.2, 0.4], [0.5, 0.3], [-0.1, -0.3],
+        [0.2, 0.1], [-0.4, 0.2], [0.3, 0.5], [-0.2, -0.1], [0.1, -0.2],
+        [5.1, 5.2], [4.8, 5.1], [5.3, 4.9], [4.9, 5.3], [5.2, 4.8],
+        [5.0, 5.0], [4.7, 5.2], [5.4, 4.7], [4.8, 4.9], [5.1, 5.1]
+    ], dtype=np.float32)
+    X = torch.from_numpy(X_np).to(device="cuda", dtype=torch.float32)
     
     print(f"\nConfiguration: N={n_samples}, D={n_dims}, K={n_components}")
-    print(f"Covariance: full, max_iter=20, init=random (fixed seed)\n")
-    
-    X = torch.randn(n_samples, n_dims, device="cuda", dtype=torch.float32)
-    
-    # Create fixed initial means (same as sklearn)
-    np.random.seed(99)
-    X_np = X.cpu().numpy()
-    init_indices = np.random.choice(n_samples, n_components, replace=False)
-    init_means = torch.from_numpy(X_np[init_indices]).to(X.device, dtype=X.dtype)
-    
-    print(f"Initial Means (first 5 dims):")
-    for k in range(n_components):
-        print(f"  Component {k}: {init_means[k][:5].cpu().numpy()}")
+    print(f"Covariance: full, max_iter=20, init=random (fixed seed)")
+    print(f"\nHardcoded data (first 5 samples):\n{X[:5].cpu().numpy()}")
     print()
     
     gmm = TorchGaussianMixture(
@@ -120,9 +114,9 @@ def observe_torch():
         print(f"  Final log-likelihood: {gmm.lower_bound_:.6f}")
     
     print(f"\n  Final Weights: {gmm.weights_.cpu().numpy()}")
-    print(f"\n  Final Means (first 5 dims of each component):")
+    print(f"\n  Final Means (all dims):")
     for k in range(n_components):
-        print(f"    Component {k}: {gmm.means_[k][:5].cpu().numpy()}")
+        print(f"    Component {k}: {gmm.means_[k].cpu().numpy()}")
     
     print("\n  Comparison with scikit-learn:")
     print("  If the final means are similar, the implementations are equivalent.")
