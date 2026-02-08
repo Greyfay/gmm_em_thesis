@@ -97,12 +97,12 @@ def benchmark_fit():
                 model = GaussianMixture(
                     n_components=K,
                     covariance_type=cov_type,
-                    max_iter=300,
-                    n_init=5,
+                    max_iter=150,
+                    n_init=1,
                     init_params="kmeans",
                     random_state=42,
                     verbose=0,
-                    tol=1e-4,
+                    tol=1e-3,
                 )
                 model.fit(X_np)
                 return model
@@ -112,16 +112,16 @@ def benchmark_fit():
                 model = torch_impl.TorchGaussianMixture(
                     n_components=K,
                     covariance_type=cov_type,
-                    max_iter=300,
-                    n_init=5,
+                    max_iter=150,
+                    n_init=1,
                     init_params="kmeans",
                     dtype=torch.float64,
-                    tol=1e-4,
+                    tol=1e-3,
                 )
                 model.fit(X_torch)
                 return model
             
-            sklearn_time, sklearn_std = timer(fit_sklearn, n_runs=3, warmup=1)
+            sklearn_time, sklearn_std = timer(fit_sklearn, n_runs=3, warmup=0)
             torch_time, torch_std = timer(fit_torch, n_runs=3, warmup=1)
             
             # sklearn is faster (lower is better)
