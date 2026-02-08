@@ -87,7 +87,7 @@ def benchmark_fit():
     results = []
     n_seeds = 5  # Number of random seeds to average over
     
-    for cov_type in ["diag", "tied", "full"]:
+    for cov_type in ["spherical", "diag", "tied", "full"]:
         print(f"\n--- Covariance type: {cov_type} ---")
         
         for N, D, K in [(500, 20, 5), (1000, 50, 5), (2000, 100, 5)]:
@@ -234,7 +234,7 @@ def benchmark_individual_functions():
     # Benchmark E-step (log probability computation)
     print(f"\n--- E-step: Log probability computation ---")
     
-    for cov_type in ["diag", "tied", "full"]:
+    for cov_type in ["spherical", "diag", "tied", "full"]:
         np.random.seed(random_seed)
         torch.manual_seed(random_seed)
         
@@ -248,7 +248,9 @@ def benchmark_individual_functions():
         weights_torch = torch.from_numpy(weights_np).to(torch.float64)
         
         # Generate covariances
-        if cov_type == "diag":
+        if cov_type == "spherical":
+            cov_torch = torch.ones((K,), dtype=torch.float64) + 0.5
+        elif cov_type == "diag":
             cov_torch = torch.ones((K, D), dtype=torch.float64) + 0.5
         elif cov_type == "tied":
             cov_torch = torch.eye(D, dtype=torch.float64) + 0.1
@@ -438,9 +440,9 @@ def _format_excel_sheets(writer, df_fit, df_func):
             # Format numeric columns
             if cell.column in [2, 3, 4]:  # N, D, K columns
                 cell.number_format = "0"
-            elif cell.column in [7, 14]:  # n_iter columns
+            elif cell.column in [7, 15]:  # n_iter columns
                 cell.number_format = "0.0"
-            elif cell.column in [8, 15]:  # Converged % columns
+            elif cell.column in [8, 16]:  # Converged % columns
                 cell.number_format = "0.0"
             elif cell.column >= 5:  # Other numeric columns
                 cell.number_format = "0.000"
