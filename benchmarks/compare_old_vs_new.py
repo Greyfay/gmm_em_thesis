@@ -516,8 +516,8 @@ def main():
     ]
     df = df[column_order]
     
-    # Save to Excel
-    output_file = "benchmarks/speedup_comparison.xlsx"
+    # Save to Excel in the same directory as this script
+    output_file = os.path.join(os.path.dirname(__file__), "speedup_comparison.xlsx")
     df.to_excel(output_file, index=False, sheet_name="Speedup Results")
     
     print(f"\n✓ Results exported to: {output_file}")
