@@ -14,6 +14,7 @@ import time
 from typing import Callable, Dict, List, Tuple
 
 import numpy as np
+import pandas as pd
 import torch
 
 # Add parent directory to path
@@ -63,8 +64,9 @@ def generate_test_data(
     dtype=torch.float64,
 ) -> Dict[str, torch.Tensor]:
     """Generate synthetic test data for benchmarking."""
-    torch.manual_seed(42)
-    np.random.seed(42)
+    random_seed = np.random.randint(1, 1001)
+    torch.manual_seed(random_seed)
+    np.random.seed(random_seed)
     
     X = torch.randn(N, D, device=device, dtype=dtype)
     means = torch.randn(K, D, device=device, dtype=dtype)
@@ -106,6 +108,7 @@ def benchmark_precisions_cholesky():
     print("BENCHMARK: _compute_precisions_cholesky (full covariance)")
     print("="*80)
     
+    results = []
     for N, D, K in [(500, 20, 5), (1000, 50, 10), (2000, 100, 5)]:
         data = generate_test_data(N, D, K)
         cov = data["cov_full"]
@@ -118,6 +121,21 @@ def benchmark_precisions_cholesky():
         print(f"  Old: {old_time:.3f} ± {old_std:.3f} ms")
         print(f"  New: {new_time:.3f} ± {new_std:.3f} ms")
         print(f"  Speedup: {speedup:.2f}x")
+        
+        results.append({
+            "Function": "_compute_precisions_cholesky",
+            "Covariance Type": "full",
+            "N": N,
+            "D": D,
+            "K": K,
+            "Old Time (ms)": old_time,
+            "Old Std (ms)": old_std,
+            "New Time (ms)": new_time,
+            "New Std (ms)": new_std,
+            "Speedup": speedup,
+        })
+    
+    return results
 
 
 def benchmark_precisions():
@@ -126,6 +144,7 @@ def benchmark_precisions():
     print("BENCHMARK: _compute_precisions (full covariance)")
     print("="*80)
     
+    results = []
     for N, D, K in [(500, 20, 5), (1000, 50, 10), (2000, 100, 5)]:
         data = generate_test_data(N, D, K)
         cov = data["cov_full"]
@@ -139,6 +158,21 @@ def benchmark_precisions():
         print(f"  Old: {old_time:.3f} ± {old_std:.3f} ms")
         print(f"  New: {new_time:.3f} ± {new_std:.3f} ms")
         print(f"  Speedup: {speedup:.2f}x")
+        
+        results.append({
+            "Function": "_compute_precisions",
+            "Covariance Type": "full",
+            "N": N,
+            "D": D,
+            "K": K,
+            "Old Time (ms)": old_time,
+            "Old Std (ms)": old_std,
+            "New Time (ms)": new_time,
+            "New Std (ms)": new_std,
+            "Speedup": speedup,
+        })
+    
+    return results
 
 
 def benchmark_log_prob_tied():
@@ -147,6 +181,7 @@ def benchmark_log_prob_tied():
     print("BENCHMARK: _estimate_log_gaussian_prob_tied_precchol")
     print("="*80)
     
+    results = []
     for N, D, K in [(500, 20, 5), (1000, 50, 10), (2000, 100, 20)]:
         data = generate_test_data(N, D, K)
         X = data["X"]
@@ -161,6 +196,21 @@ def benchmark_log_prob_tied():
         print(f"  Old: {old_time:.3f} ± {old_std:.3f} ms")
         print(f"  New: {new_time:.3f} ± {new_std:.3f} ms")
         print(f"  Speedup: {speedup:.2f}x")
+        
+        results.append({
+            "Function": "_estimate_log_gaussian_prob_tied_precchol",
+            "Covariance Type": "tied",
+            "N": N,
+            "D": D,
+            "K": K,
+            "Old Time (ms)": old_time,
+            "Old Std (ms)": old_std,
+            "New Time (ms)": new_time,
+            "New Std (ms)": new_std,
+            "Speedup": speedup,
+        })
+    
+    return results
 
 
 def benchmark_log_prob_full():
@@ -169,6 +219,7 @@ def benchmark_log_prob_full():
     print("BENCHMARK: _estimate_log_gaussian_prob_full_precchol")
     print("="*80)
     
+    results = []
     for N, D, K in [(500, 20, 5), (1000, 50, 10), (2000, 100, 5)]:
         data = generate_test_data(N, D, K)
         X = data["X"]
@@ -183,6 +234,21 @@ def benchmark_log_prob_full():
         print(f"  Old: {old_time:.3f} ± {old_std:.3f} ms")
         print(f"  New: {new_time:.3f} ± {new_std:.3f} ms")
         print(f"  Speedup: {speedup:.2f}x")
+        
+        results.append({
+            "Function": "_estimate_log_gaussian_prob_full_precchol",
+            "Covariance Type": "full",
+            "N": N,
+            "D": D,
+            "K": K,
+            "Old Time (ms)": old_time,
+            "Old Std (ms)": old_std,
+            "New Time (ms)": new_time,
+            "New Std (ms)": new_std,
+            "Speedup": speedup,
+        })
+    
+    return results
 
 
 def benchmark_m_step_diag():
@@ -191,6 +257,7 @@ def benchmark_m_step_diag():
     print("BENCHMARK: _maximization_step (diag covariance)")
     print("="*80)
     
+    results = []
     for N, D, K in [(500, 20, 5), (1000, 50, 10), (2000, 100, 20)]:
         data = generate_test_data(N, D, K)
         X = data["X"]
@@ -207,6 +274,21 @@ def benchmark_m_step_diag():
         print(f"  Old: {old_time:.3f} ± {old_std:.3f} ms")
         print(f"  New: {new_time:.3f} ± {new_std:.3f} ms")
         print(f"  Speedup: {speedup:.2f}x")
+        
+        results.append({
+            "Function": "_maximization_step",
+            "Covariance Type": "diag",
+            "N": N,
+            "D": D,
+            "K": K,
+            "Old Time (ms)": old_time,
+            "Old Std (ms)": old_std,
+            "New Time (ms)": new_time,
+            "New Std (ms)": new_std,
+            "Speedup": speedup,
+        })
+    
+    return results
 
 
 def benchmark_m_step_tied():
@@ -215,6 +297,7 @@ def benchmark_m_step_tied():
     print("BENCHMARK: _maximization_step (tied covariance)")
     print("="*80)
     
+    results = []
     for N, D, K in [(500, 20, 5), (1000, 50, 10), (2000, 100, 20)]:
         data = generate_test_data(N, D, K)
         X = data["X"]
@@ -231,6 +314,21 @@ def benchmark_m_step_tied():
         print(f"  Old: {old_time:.3f} ± {old_std:.3f} ms")
         print(f"  New: {new_time:.3f} ± {new_std:.3f} ms")
         print(f"  Speedup: {speedup:.2f}x")
+        
+        results.append({
+            "Function": "_maximization_step",
+            "Covariance Type": "tied",
+            "N": N,
+            "D": D,
+            "K": K,
+            "Old Time (ms)": old_time,
+            "Old Std (ms)": old_std,
+            "New Time (ms)": new_time,
+            "New Std (ms)": new_std,
+            "Speedup": speedup,
+        })
+    
+    return results
 
 
 def benchmark_m_step_full():
@@ -239,6 +337,7 @@ def benchmark_m_step_full():
     print("BENCHMARK: _maximization_step (full covariance)")
     print("="*80)
     
+    results = []
     for N, D, K in [(500, 20, 5), (1000, 50, 10), (2000, 100, 5)]:
         data = generate_test_data(N, D, K)
         X = data["X"]
@@ -255,6 +354,21 @@ def benchmark_m_step_full():
         print(f"  Old: {old_time:.3f} ± {old_std:.3f} ms")
         print(f"  New: {new_time:.3f} ± {new_std:.3f} ms")
         print(f"  Speedup: {speedup:.2f}x")
+        
+        results.append({
+            "Function": "_maximization_step",
+            "Covariance Type": "full",
+            "N": N,
+            "D": D,
+            "K": K,
+            "Old Time (ms)": old_time,
+            "Old Std (ms)": old_std,
+            "New Time (ms)": new_time,
+            "New Std (ms)": new_std,
+            "Speedup": speedup,
+        })
+    
+    return results
 
 
 def benchmark_kmeans_lloyd():
@@ -263,6 +377,7 @@ def benchmark_kmeans_lloyd():
     print("BENCHMARK: _kmeans_lloyd_with_init")
     print("="*80)
     
+    results = []
     for N, D, K in [(500, 20, 5), (1000, 50, 10), (2000, 100, 20)]:
         data = generate_test_data(N, D, K)
         X = data["X"]
@@ -276,6 +391,21 @@ def benchmark_kmeans_lloyd():
         print(f"  Old: {old_time:.3f} ± {old_std:.3f} ms")
         print(f"  New: {new_time:.3f} ± {new_std:.3f} ms")
         print(f"  Speedup: {speedup:.2f}x")
+        
+        results.append({
+            "Function": "_kmeans_lloyd_with_init",
+            "Covariance Type": "N/A",
+            "N": N,
+            "D": D,
+            "K": K,
+            "Old Time (ms)": old_time,
+            "Old Std (ms)": old_std,
+            "New Time (ms)": new_time,
+            "New Std (ms)": new_std,
+            "Speedup": speedup,
+        })
+    
+    return results
 
 
 def benchmark_full_fit():
@@ -284,6 +414,7 @@ def benchmark_full_fit():
     print("BENCHMARK: TorchGaussianMixture.fit() - END-TO-END")
     print("="*80)
     
+    results = []
     for cov_type in ["diag", "tied", "full"]:
         print(f"\n--- Covariance type: {cov_type} ---")
         for N, D, K in [(500, 20, 5), (1000, 50, 5)]:
@@ -322,6 +453,21 @@ def benchmark_full_fit():
             print(f"  Old: {old_time:.3f} ± {old_std:.3f} ms")
             print(f"  New: {new_time:.3f} ± {new_std:.3f} ms")
             print(f"  Speedup: {speedup:.2f}x")
+            
+            results.append({
+                "Function": "TorchGaussianMixture.fit",
+                "Covariance Type": cov_type,
+                "N": N,
+                "D": D,
+                "K": K,
+                "Old Time (ms)": old_time,
+                "Old Std (ms)": old_std,
+                "New Time (ms)": new_time,
+                "New Std (ms)": new_std,
+                "Speedup": speedup,
+            })
+    
+    return results
 
 
 def main():
@@ -334,20 +480,51 @@ def main():
     print(f"Device: {torch.device('cuda' if torch.cuda.is_available() else 'cpu')}")
     print(f"CUDA available: {torch.cuda.is_available()}")
     
+    # Collect all results
+    all_results = []
+    
     # Run all benchmarks
-    benchmark_precisions_cholesky()
-    benchmark_precisions()
-    benchmark_log_prob_tied()
-    benchmark_log_prob_full()
-    benchmark_m_step_diag()
-    benchmark_m_step_tied()
-    benchmark_m_step_full()
-    benchmark_kmeans_lloyd()
-    benchmark_full_fit()
+    all_results.extend(benchmark_precisions_cholesky())
+    all_results.extend(benchmark_precisions())
+    all_results.extend(benchmark_log_prob_tied())
+    all_results.extend(benchmark_log_prob_full())
+    all_results.extend(benchmark_m_step_diag())
+    all_results.extend(benchmark_m_step_tied())
+    all_results.extend(benchmark_m_step_full())
+    all_results.extend(benchmark_kmeans_lloyd())
+    all_results.extend(benchmark_full_fit())
     
     print("\n" + "="*80)
     print("BENCHMARKS COMPLETE")
     print("="*80)
+    
+    # Convert to DataFrame and save to Excel
+    df = pd.DataFrame(all_results)
+    
+    # Reorder columns for better readability
+    column_order = [
+        "Function",
+        "Covariance Type",
+        "N",
+        "D",
+        "K",
+        "Old Time (ms)",
+        "Old Std (ms)",
+        "New Time (ms)",
+        "New Std (ms)",
+        "Speedup",
+    ]
+    df = df[column_order]
+    
+    # Save to Excel
+    output_file = "benchmarks/speedup_comparison.xlsx"
+    df.to_excel(output_file, index=False, sheet_name="Speedup Results")
+    
+    print(f"\n✓ Results exported to: {output_file}")
+    print(f"  Total benchmarks: {len(df)}")
+    print(f"  Average speedup: {df['Speedup'].mean():.2f}x")
+    print(f"  Max speedup: {df['Speedup'].max():.2f}x")
+    print(f"  Min speedup: {df['Speedup'].min():.2f}x")
 
 
 if __name__ == "__main__":
