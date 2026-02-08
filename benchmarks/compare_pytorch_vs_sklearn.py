@@ -97,11 +97,12 @@ def benchmark_fit():
                 model = GaussianMixture(
                     n_components=K,
                     covariance_type=cov_type,
-                    max_iter=20,
+                    max_iter=100,
                     n_init=1,
                     init_params="random",
                     random_state=42,
                     verbose=0,
+                    tol=1e-4,
                 )
                 model.fit(X_np)
                 return model
@@ -111,10 +112,11 @@ def benchmark_fit():
                 model = torch_impl.TorchGaussianMixture(
                     n_components=K,
                     covariance_type=cov_type,
-                    max_iter=20,
+                    max_iter=100,
                     n_init=1,
                     init_params="random",
                     dtype=torch.float64,
+                    tol=1e-4,
                 )
                 model.fit(X_torch)
                 return model
