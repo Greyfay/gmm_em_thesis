@@ -106,6 +106,9 @@ def benchmark_fit():
             torch_lower_bounds = []
             torch_log_likelihoods = []
             
+            sklearn_times_per_iter = []
+            torch_times_per_iter = []
+            
             for seed_idx in range(n_seeds):
                 seed = np.random.randint(1, 10001)
                 X_np, X_torch = generate_test_data(N, D, K, seed=seed)
@@ -130,6 +133,7 @@ def benchmark_fit():
                 sklearn_converged.append(sklearn_model.converged_)
                 sklearn_lower_bounds.append(sklearn_model.lower_bound_)
                 sklearn_log_likelihoods.append(sklearn_model.score(X_np))
+                sklearn_times_per_iter.append(sklearn_time / sklearn_model.n_iter_)
                 
                 # PyTorch fit
                 if torch.cuda.is_available():
@@ -154,6 +158,7 @@ def benchmark_fit():
                 torch_converged.append(torch_model.converged_)
                 torch_lower_bounds.append(torch_model.lower_bound_)
                 torch_log_likelihoods.append(float(torch_model.score(X_torch).item()))
+                torch_times_per_iter.append(torch_time / torch_model.n_iter_)
             
             # Compute averages
             sklearn_time_mean = np.mean(sklearn_times)
@@ -162,7 +167,8 @@ def benchmark_fit():
             sklearn_converged_rate = np.mean(sklearn_converged)
             sklearn_lower_bound_mean = np.mean(sklearn_lower_bounds)
             sklearn_log_likelihood_mean = np.mean(sklearn_log_likelihoods)
-            sklearn_time_per_iter = sklearn_time_mean / sklearn_n_iter_mean
+            sklearn_time_per_iter_mean = np.mean(sklearn_times_per_iter)
+            sklearn_time_per_iter_std = np.std(sklearn_times_per_iter)
             
             torch_time_mean = np.mean(torch_times)
             torch_time_std = np.std(torch_times)
@@ -170,15 +176,16 @@ def benchmark_fit():
             torch_converged_rate = np.mean(torch_converged)
             torch_lower_bound_mean = np.mean(torch_lower_bounds)
             torch_log_likelihood_mean = np.mean(torch_log_likelihoods)
-            torch_time_per_iter = torch_time_mean / torch_n_iter_mean
+            torch_time_per_iter_mean = np.mean(torch_times_per_iter)
+            torch_time_per_iter_std = np.std(torch_times_per_iter)
             
             speedup = sklearn_time_mean / torch_time_mean
             
             print(f"  sklearn: {sklearn_time_mean:.1f}±{sklearn_time_std:.1f}ms, "
-                  f"{sklearn_n_iter_mean:.1f} iters, {sklearn_time_per_iter:.2f}ms/iter, "
+                  f"{sklearn_n_iter_mean:.1f} iters, {sklearn_time_per_iter_mean:.2f}±{sklearn_time_per_iter_std:.2f}ms/iter, "
                   f"converged: {sklearn_converged_rate*100:.0f}%")
             print(f"  pytorch: {torch_time_mean:.1f}±{torch_time_std:.1f}ms, "
-                  f"{torch_n_iter_mean:.1f} iters, {torch_time_per_iter:.2f}ms/iter, "
+                  f"{torch_n_iter_mean:.1f} iters, {torch_time_per_iter_mean:.2f}±{torch_time_per_iter_std:.2f}ms/iter, "
                   f"converged: {torch_converged_rate*100:.0f}%")
             print(f"  Ratio: {speedup:.2f}x")
             
@@ -193,14 +200,16 @@ def benchmark_fit():
                 "sklearn Converged (%)": sklearn_converged_rate * 100,
                 "sklearn Lower Bound": sklearn_lower_bound_mean,
                 "sklearn Log Likelihood": sklearn_log_likelihood_mean,
-                "sklearn Time/Iter (ms)": sklearn_time_per_iter,
+                "sklearn Time/Iter (ms)": sklearn_time_per_iter_mean,
+                "sklearn Time/Iter Std (ms)": sklearn_time_per_iter_std,
                 "PyTorch Time (ms)": torch_time_mean,
                 "PyTorch Time Std (ms)": torch_time_std,
                 "PyTorch n_iter": torch_n_iter_mean,
                 "PyTorch Converged (%)": torch_converged_rate * 100,
                 "PyTorch Lower Bound": torch_lower_bound_mean,
                 "PyTorch Log Likelihood": torch_log_likelihood_mean,
-                "PyTorch Time/Iter (ms)": torch_time_per_iter,
+                "PyTorch Time/Iter (ms)": torch_time_per_iter_mean,
+                "PyTorch Time/Iter Std (ms)": torch_time_per_iter_std,
                 "Ratio (sklearn/pytorch)": speedup,
                 "n_seeds": n_seeds,
             })
@@ -387,8 +396,8 @@ def main():
     
     # Time per iteration
     print(f"\nTime per Iteration:")
-    print(f"  sklearn: {df_fit['sklearn Time/Iter (ms)'].mean():.3f} ms/iter")
-    print(f"  pytorch: {df_fit['PyTorch Time/Iter (ms)'].mean():.3f} ms/iter")
+    print(f"  sklearn: {df_fit['sklearn Time/Iter (ms)'].mean():.3f} ± {df_fit['sklearn Time/Iter Std (ms)'].mean():.3f} ms/iter")
+    print(f"  pytorch: {df_fit['PyTorch Time/Iter (ms)'].mean():.3f} ± {df_fit['PyTorch Time/Iter Std (ms)'].mean():.3f} ms/iter")
     
     # Breakdown by covariance type
     print(f"\nBreakdown by Covariance Type:")
@@ -396,10 +405,12 @@ def main():
         subset = df_fit[df_fit["Covariance Type"] == cov_type]
         avg_ratio = subset["Ratio (sklearn/pytorch)"].mean()
         avg_sklearn_time_per_iter = subset["sklearn Time/Iter (ms)"].mean()
+        avg_sklearn_time_per_iter_std = subset["sklearn Time/Iter Std (ms)"].mean()
         avg_pytorch_time_per_iter = subset["PyTorch Time/Iter (ms)"].mean()
+        avg_pytorch_time_per_iter_std = subset["PyTorch Time/Iter Std (ms)"].mean()
         print(f"  {cov_type:6s}: {avg_ratio:.2f}x ratio, "
-              f"sklearn {avg_sklearn_time_per_iter:.3f}ms/iter, "
-              f"pytorch {avg_pytorch_time_per_iter:.3f}ms/iter")
+              f"sklearn {avg_sklearn_time_per_iter:.3f}±{avg_sklearn_time_per_iter_std:.3f}ms/iter, "
+              f"pytorch {avg_pytorch_time_per_iter:.3f}±{avg_pytorch_time_per_iter_std:.3f}ms/iter")
 
 
 def _format_excel_sheets(writer, df_fit, df_func):
