@@ -157,15 +157,16 @@ def benchmark_individual_functions():
     
     # Test data
     N, D, K = 1000, 50, 5
+    random_seed = np.random.randint(1, 1001)
     
-    print(f"\nUsing N={N}, D={D}, K={K}")
+    print(f"\nUsing N={N}, D={D}, K={K}, seed={random_seed}")
     
     # Benchmark E-step (log probability computation)
     print(f"\n--- E-step: Log probability computation ---")
     
     for cov_type in ["diag", "tied", "full"]:
-        np.random.seed(42)
-        torch.manual_seed(42)
+        np.random.seed(random_seed)
+        torch.manual_seed(random_seed)
         
         X_np = np.random.randn(N, D).astype(np.float64)
         X_torch = torch.from_numpy(X_np).to(torch.float64)
