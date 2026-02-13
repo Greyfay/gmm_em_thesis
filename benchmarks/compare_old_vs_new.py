@@ -482,7 +482,7 @@ def benchmark_memory():
             new_mem = torch.cuda.max_memory_allocated() if torch.cuda.is_available() else 0
             
             # Calculate memory reduction
-            mem_reduction = ((old_mem - new_mem) / old_mem * 100) if old_mem > 0 else 0
+            mem_reduction = (((old_mem - new_mem) / old_mem) * 100) if old_mem > 0 else 0
             
             old_mem_mb = old_mem / (1024**2) if torch.cuda.is_available() else 0
             new_mem_mb = new_mem / (1024**2) if torch.cuda.is_available() else 0
@@ -608,7 +608,7 @@ def benchmark_bandwidth():
             old_bw = (est_bytes / (1024**3)) / (old_time_ms / 1000)
             new_bw = (est_bytes / (1024**3)) / (new_time_ms / 1000)
             
-            bw_improvement = ((new_bw - old_bw) / old_bw * 100) if old_bw > 0 else 0
+            bw_improvement = (((new_bw - old_bw) / old_bw) * 100) if old_bw > 0 else 0
             
             print(f"  Old: {old_bw:.2f} GB/s (time: {old_time_ms:.3f} ms)")
             print(f"  New: {new_bw:.2f} GB/s (time: {new_time_ms:.3f} ms)")
@@ -781,6 +781,12 @@ def main():
         ]
         df_memory = df_memory[column_order_mem]
         
+        # Rename columns to include units
+        df_memory = df_memory.rename(columns={
+            "Old Value": "Old Memory (MB)",
+            "New Value": "New Memory (MB)",
+        })
+        
         # Sort by covariance type (spherical, diag, tied, full), then N, then D
         cov_type_order = {"spherical": 0, "diag": 1, "tied": 2, "full": 3}
         df_memory["_cov_order"] = df_memory["Covariance Type"].map(cov_type_order)
@@ -815,6 +821,12 @@ def main():
             "Device",
         ]
         df_bandwidth = df_bandwidth[column_order_bw]
+        
+        # Rename columns to include units
+        df_bandwidth = df_bandwidth.rename(columns={
+            "Old Value": "Old Bandwidth (GB/s)",
+            "New Value": "New Bandwidth (GB/s)",
+        })
         
         # Sort by covariance type (spherical, diag, tied, full), then N, then D
         cov_type_order = {"spherical": 0, "diag": 1, "tied": 2, "full": 3}
