@@ -217,6 +217,335 @@ def benchmark_fit():
     return results
 
 
+def benchmark_convergence_iterations():
+    """Benchmark iterations to convergence across comprehensive configuration set.
+    
+    Tests across all covariance types using the same configuration matrix as compare_old_vs_new:
+    (N, D) = (1k, 20), (1k, 50), (1k, 100), (10k, 20), (10k, 50), (10k, 100),
+             (100k, 20), (100k, 50), (100k, 100)
+    """
+    print("\n" + "="*100)
+    print("BENCHMARK: Iterations to Convergence (Comprehensive Configuration Set)")
+    print("="*100)
+    
+    results = []
+    K = 5  # Fixed number of components
+    n_seeds = 3  # Number of random seeds per configuration
+    
+    # Test configurations: (N, D) as in compare_old_vs_new.py
+    test_configs = [
+        (1000, 20),      # N=1k, D=20
+        (10000, 20),     # N=10k, D=20
+        (100000, 20),    # N=100k, D=20
+        (1000, 50),      # N=1k, D=50
+        (10000, 50),     # N=10k, D=50
+        (100000, 50),    # N=100k, D=50
+        (1000, 100),     # N=1k, D=100
+        (10000, 100),    # N=10k, D=100
+        (100000, 100),   # N=100k, D=100
+    ]
+    
+    for N, D in test_configs:
+        for cov_type in ["spherical", "diag", "tied", "full"]:
+            print(f"\n--- Convergence: N={N}, D={D}, K={K}, cov_type={cov_type} ---")
+            
+            sklearn_n_iters = []
+            sklearn_converged = []
+            torch_n_iters = []
+            torch_converged = []
+            
+            for seed_idx in range(n_seeds):
+                seed = np.random.randint(1, 10001)
+                X_np, X_torch = generate_test_data(N, D, K, seed=seed)
+                
+                # sklearn fit
+                sklearn_model = GaussianMixture(
+                    n_components=K,
+                    covariance_type=cov_type,
+                    max_iter=150,
+                    n_init=1,
+                    init_params="kmeans",
+                    random_state=seed,
+                    verbose=0,
+                    tol=1e-3,
+                )
+                sklearn_model.fit(X_np)
+                
+                sklearn_n_iters.append(sklearn_model.n_iter_)
+                sklearn_converged.append(sklearn_model.converged_)
+                
+                # PyTorch fit
+                torch_model = torch_impl.TorchGaussianMixture(
+                    n_components=K,
+                    covariance_type=cov_type,
+                    max_iter=150,
+                    n_init=1,
+                    init_params="kmeans",
+                    dtype=torch.float64,
+                    tol=1e-3,
+                )
+                torch_model.fit(X_torch)
+                
+                torch_n_iters.append(torch_model.n_iter_)
+                torch_converged.append(torch_model.converged_)
+            
+            # Calculate statistics
+            sklearn_n_iter_mean = np.mean(sklearn_n_iters)
+            sklearn_n_iter_std = np.std(sklearn_n_iters)
+            sklearn_converged_rate = np.mean(sklearn_converged)
+            
+            torch_n_iter_mean = np.mean(torch_n_iters)
+            torch_n_iter_std = np.std(torch_n_iters)
+            torch_converged_rate = np.mean(torch_converged)
+            
+            # Iteration difference
+            iter_diff = torch_n_iter_mean - sklearn_n_iter_mean
+            iter_diff_pct = (iter_diff / sklearn_n_iter_mean * 100) if sklearn_n_iter_mean > 0 else 0
+            
+            print(f"  sklearn: {sklearn_n_iter_mean:.1f} ± {sklearn_n_iter_std:.1f} iters, {sklearn_converged_rate*100:.0f}% converged")
+            print(f"  pytorch: {torch_n_iter_mean:.1f} ± {torch_n_iter_std:.1f} iters, {torch_converged_rate*100:.0f}% converged")
+            print(f"  difference: {iter_diff:+.1f} ({iter_diff_pct:+.1f}%)")
+            
+            results.append({
+                "N": N,
+                "D": D,
+                "K": K,
+                "Covariance Type": cov_type,
+                "sklearn n_iter": sklearn_n_iter_mean,
+                "sklearn n_iter Std": sklearn_n_iter_std,
+                "sklearn Converged (%)": sklearn_converged_rate * 100,
+                "PyTorch n_iter": torch_n_iter_mean,
+                "PyTorch n_iter Std": torch_n_iter_std,
+                "PyTorch Converged (%)": torch_converged_rate * 100,
+                "Iteration Difference": iter_diff,
+                "Iteration Difference (%)": iter_diff_pct,
+                "n_seeds": n_seeds,
+            })
+    
+    return results
+
+
+def benchmark_wall_clock_time_to_convergence():
+    """Benchmark total wall-clock time to convergence.
+    
+    Tests across all covariance types using the same configuration matrix as compare_old_vs_new:
+    (N, D) = (1k, 20), (1k, 50), (1k, 100), (10k, 20), (10k, 50), (10k, 100),
+             (100k, 20), (100k, 50), (100k, 100)
+    """
+    print("\n" + "="*100)
+    print("BENCHMARK: Wall-clock Time to Convergence")
+    print("="*100)
+    
+    results = []
+    K = 5  # Fixed number of components
+    n_seeds = 3  # Number of random seeds per configuration
+    
+    # Test configurations: (N, D) as in compare_old_vs_new.py
+    test_configs = [
+        (1000, 20),      # N=1k, D=20
+        (10000, 20),     # N=10k, D=20
+        (100000, 20),    # N=100k, D=20
+        (1000, 50),      # N=1k, D=50
+        (10000, 50),     # N=10k, D=50
+        (100000, 50),    # N=100k, D=50
+        (1000, 100),     # N=1k, D=100
+        (10000, 100),    # N=10k, D=100
+        (100000, 100),   # N=100k, D=100
+    ]
+    
+    for N, D in test_configs:
+        for cov_type in ["spherical", "diag", "tied", "full"]:
+            print(f"\n--- Wall-clock time: N={N}, D={D}, K={K}, cov_type={cov_type} ---")
+            
+            sklearn_wall_times = []
+            torch_wall_times = []
+            
+            for seed_idx in range(n_seeds):
+                seed = np.random.randint(1, 10001)
+                X_np, X_torch = generate_test_data(N, D, K, seed=seed)
+                
+                # sklearn wall-clock time to convergence
+                start = time.perf_counter()
+                sklearn_model = GaussianMixture(
+                    n_components=K,
+                    covariance_type=cov_type,
+                    max_iter=150,
+                    n_init=1,
+                    init_params="kmeans",
+                    random_state=seed,
+                    verbose=0,
+                    tol=1e-3,
+                )
+                sklearn_model.fit(X_np)
+                sklearn_wall_time = (time.perf_counter() - start) * 1000  # ms
+                sklearn_wall_times.append(sklearn_wall_time)
+                
+                # PyTorch wall-clock time to convergence
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                start = time.perf_counter()
+                torch_model = torch_impl.TorchGaussianMixture(
+                    n_components=K,
+                    covariance_type=cov_type,
+                    max_iter=150,
+                    n_init=1,
+                    init_params="kmeans",
+                    dtype=torch.float64,
+                    tol=1e-3,
+                )
+                torch_model.fit(X_torch)
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                torch_wall_time = (time.perf_counter() - start) * 1000  # ms
+                torch_wall_times.append(torch_wall_time)
+            
+            # Calculate statistics
+            sklearn_wall_time_mean = np.mean(sklearn_wall_times)
+            sklearn_wall_time_std = np.std(sklearn_wall_times)
+            
+            torch_wall_time_mean = np.mean(torch_wall_times)
+            torch_wall_time_std = np.std(torch_wall_times)
+            
+            speedup = sklearn_wall_time_mean / torch_wall_time_mean
+            
+            print(f"  sklearn: {sklearn_wall_time_mean:.1f}±{sklearn_wall_time_std:.1f}ms")
+            print(f"  pytorch: {torch_wall_time_mean:.1f}±{torch_wall_time_std:.1f}ms")
+            print(f"  Ratio: {speedup:.2f}x")
+            
+            results.append({
+                "N": N,
+                "D": D,
+                "K": K,
+                "Covariance Type": cov_type,
+                "sklearn Wall-clock Time (ms)": sklearn_wall_time_mean,
+                "sklearn Wall-clock Time Std (ms)": sklearn_wall_time_std,
+                "PyTorch Wall-clock Time (ms)": torch_wall_time_mean,
+                "PyTorch Wall-clock Time Std (ms)": torch_wall_time_std,
+                "Ratio (sklearn/pytorch)": speedup,
+                "n_seeds": n_seeds,
+            })
+    
+    return results
+
+
+def benchmark_quality_at_convergence():
+    """Benchmark model quality at convergence using final mean log-likelihood.
+    
+    Tests across all covariance types using the same configuration matrix as compare_old_vs_new:
+    (N, D) = (1k, 20), (1k, 50), (1k, 100), (10k, 20), (10k, 50), (10k, 100),
+             (100k, 20), (100k, 50), (100k, 100)
+    """
+    print("\n" + "="*100)
+    print("BENCHMARK: Model Quality at Convergence (Mean Log-Likelihood)")
+    print("="*100)
+    
+    results = []
+    K = 5  # Fixed number of components
+    n_seeds = 3  # Number of random seeds per configuration
+    
+    # Test configurations: (N, D) as in compare_old_vs_new.py
+    test_configs = [
+        (1000, 20),      # N=1k, D=20
+        (10000, 20),     # N=10k, D=20
+        (100000, 20),    # N=100k, D=20
+        (1000, 50),      # N=1k, D=50
+        (10000, 50),     # N=10k, D=50
+        (100000, 50),    # N=100k, D=50
+        (1000, 100),     # N=1k, D=100
+        (10000, 100),    # N=10k, D=100
+        (100000, 100),   # N=100k, D=100
+    ]
+    
+    for N, D in test_configs:
+        for cov_type in ["spherical", "diag", "tied", "full"]:
+            print(f"\n--- Quality: N={N}, D={D}, K={K}, cov_type={cov_type} ---")
+            
+            sklearn_log_likelihoods = []
+            torch_log_likelihoods = []
+            sklearn_n_iters = []
+            torch_n_iters = []
+            sklearn_converged = []
+            torch_converged = []
+            
+            for seed_idx in range(n_seeds):
+                seed = np.random.randint(1, 10001)
+                X_np, X_torch = generate_test_data(N, D, K, seed=seed)
+                
+                # sklearn fit and log-likelihood
+                sklearn_model = GaussianMixture(
+                    n_components=K,
+                    covariance_type=cov_type,
+                    max_iter=150,
+                    n_init=1,
+                    init_params="kmeans",
+                    random_state=seed,
+                    verbose=0,
+                    tol=1e-3,
+                )
+                sklearn_model.fit(X_np)
+                sklearn_log_likelihood = sklearn_model.score(X_np)
+                sklearn_log_likelihoods.append(sklearn_log_likelihood)
+                sklearn_n_iters.append(sklearn_model.n_iter_)
+                sklearn_converged.append(sklearn_model.converged_)
+                
+                # PyTorch fit and log-likelihood
+                torch_model = torch_impl.TorchGaussianMixture(
+                    n_components=K,
+                    covariance_type=cov_type,
+                    max_iter=150,
+                    n_init=1,
+                    init_params="kmeans",
+                    dtype=torch.float64,
+                    tol=1e-3,
+                )
+                torch_model.fit(X_torch)
+                torch_log_likelihood = float(torch_model.score(X_torch).item())
+                torch_log_likelihoods.append(torch_log_likelihood)
+                torch_n_iters.append(torch_model.n_iter_)
+                torch_converged.append(torch_model.converged_)
+            
+            # Calculate statistics
+            sklearn_ll_mean = np.mean(sklearn_log_likelihoods)
+            sklearn_ll_std = np.std(sklearn_log_likelihoods)
+            sklearn_n_iter_mean = np.mean(sklearn_n_iters)
+            sklearn_converged_rate = np.mean(sklearn_converged)
+            
+            torch_ll_mean = np.mean(torch_log_likelihoods)
+            torch_ll_std = np.std(torch_log_likelihoods)
+            torch_n_iter_mean = np.mean(torch_n_iters)
+            torch_converged_rate = np.mean(torch_converged)
+            
+            # Log-likelihood difference
+            ll_diff = torch_ll_mean - sklearn_ll_mean
+            ll_diff_pct = (abs(ll_diff) / abs(sklearn_ll_mean) * 100) if sklearn_ll_mean != 0 else 0
+            
+            print(f"  sklearn: {sklearn_ll_mean:.4f}±{sklearn_ll_std:.4f}, "
+                  f"{sklearn_n_iter_mean:.1f} iters, {sklearn_converged_rate*100:.0f}% converged")
+            print(f"  pytorch: {torch_ll_mean:.4f}±{torch_ll_std:.4f}, "
+                  f"{torch_n_iter_mean:.1f} iters, {torch_converged_rate*100:.0f}% converged")
+            print(f"  log-likelihood difference: {ll_diff:+.4f} ({ll_diff_pct:.2f}%)")
+            
+            results.append({
+                "N": N,
+                "D": D,
+                "K": K,
+                "Covariance Type": cov_type,
+                "sklearn Mean Log-Likelihood": sklearn_ll_mean,
+                "sklearn Mean Log-Likelihood Std": sklearn_ll_std,
+                "sklearn n_iter": sklearn_n_iter_mean,
+                "sklearn Converged (%)": sklearn_converged_rate * 100,
+                "PyTorch Mean Log-Likelihood": torch_ll_mean,
+                "PyTorch Mean Log-Likelihood Std": torch_ll_std,
+                "PyTorch n_iter": torch_n_iter_mean,
+                "PyTorch Converged (%)": torch_converged_rate * 100,
+                "Log-Likelihood Difference": ll_diff,
+                "Log-Likelihood Difference (%)": ll_diff_pct,
+                "n_seeds": n_seeds,
+            })
+    
+    return results
+
+
 def benchmark_individual_functions():
     """Benchmark individual functions where applicable."""
     print("\n" + "="*100)
@@ -299,6 +628,9 @@ def main():
     
     # Run benchmarks
     fit_results = benchmark_fit()
+    convergence_results = benchmark_convergence_iterations()
+    wall_clock_results = benchmark_wall_clock_time_to_convergence()
+    quality_results = benchmark_quality_at_convergence()
     func_results = benchmark_individual_functions()
     
     print("\n" + "="*100)
@@ -315,10 +647,37 @@ def main():
         # Write fit results
         df_fit.to_excel(writer, sheet_name="Full Fit Comparison", index=False)
         
+        # Write convergence results
+        if convergence_results:
+            df_convergence = pd.DataFrame(convergence_results)
+            # Sort by covariance type, then N, then D
+            cov_type_order = {"spherical": 0, "diag": 1, "tied": 2, "full": 3}
+            df_convergence["_cov_order"] = df_convergence["Covariance Type"].map(cov_type_order)
+            df_convergence = df_convergence.sort_values(["_cov_order", "N", "D"]).drop("_cov_order", axis=1)
+            df_convergence.to_excel(writer, sheet_name="Convergence Iterations", index=False)
+        
         # Write function results if available
         if func_results:
             df_func = pd.DataFrame(func_results)
             df_func.to_excel(writer, sheet_name="Function Comparison", index=False)
+        
+        # Write wall-clock time to convergence results
+        if wall_clock_results:
+            df_wall_clock = pd.DataFrame(wall_clock_results)
+            # Sort by covariance type, then N, then D
+            cov_type_order = {"spherical": 0, "diag": 1, "tied": 2, "full": 3}
+            df_wall_clock["_cov_order"] = df_wall_clock["Covariance Type"].map(cov_type_order)
+            df_wall_clock = df_wall_clock.sort_values(["_cov_order", "N", "D"]).drop("_cov_order", axis=1)
+            df_wall_clock.to_excel(writer, sheet_name="Wall-clock Time to Convergence", index=False)
+        
+        # Write quality at convergence results
+        if quality_results:
+            df_quality = pd.DataFrame(quality_results)
+            # Sort by covariance type, then N, then D
+            cov_type_order = {"spherical": 0, "diag": 1, "tied": 2, "full": 3}
+            df_quality["_cov_order"] = df_quality["Covariance Type"].map(cov_type_order)
+            df_quality = df_quality.sort_values(["_cov_order", "N", "D"]).drop("_cov_order", axis=1)
+            df_quality.to_excel(writer, sheet_name="Quality at Convergence", index=False)
         
         # Create summary statistics sheet
         summary_data = {
