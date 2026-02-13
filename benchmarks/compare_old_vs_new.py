@@ -421,15 +421,21 @@ def benchmark_memory():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # Test configurations: (N, D, K)
+    # Testing D = [20, 50, 100] × N = [1k, 10k, 100k]
     test_configs = [
-        (1000, 20, 5),
-        (10000, 50, 5),
-        (10000, 100, 5),
-        (100000, 20, 5),
+        (1000, 20, 5),      # N=1k, D=20, K=5
+        (10000, 20, 5),     # N=10k, D=20, K=5
+        (100000, 20, 5),    # N=100k, D=20, K=5
+        (1000, 50, 5),      # N=1k, D=50, K=5
+        (10000, 50, 5),     # N=10k, D=50, K=5
+        (100000, 50, 5),    # N=100k, D=50, K=5
+        (1000, 100, 5),     # N=1k, D=100, K=5
+        (10000, 100, 5),    # N=10k, D=100, K=5
+        (100000, 100, 5),   # N=100k, D=100, K=5
     ]
     
     for N, D, K in test_configs:
-        for cov_type in ["diag", "tied", "full"]:
+        for cov_type in ["spherical", "diag", "tied", "full"]:
             print(f"\n--- Memory: {cov_type}, N={N}, D={D}, K={K} ---")
             
             data = generate_test_data(N, D, K, device=device)
@@ -515,11 +521,17 @@ def benchmark_bandwidth():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # Test configurations: (N, D, K)
+    # Testing D = [20, 50, 100] × N = [1k, 10k, 100k]
     test_configs = [
-        (1000, 20, 5),
-        (10000, 50, 5),
-        (10000, 100, 5),
-        (100000, 20, 5),
+        (1000, 20, 5),      # N=1k, D=20, K=5
+        (10000, 20, 5),     # N=10k, D=20, K=5
+        (100000, 20, 5),    # N=100k, D=20, K=5
+        (1000, 50, 5),      # N=1k, D=50, K=5
+        (10000, 50, 5),     # N=10k, D=50, K=5
+        (100000, 50, 5),    # N=100k, D=50, K=5
+        (1000, 100, 5),     # N=1k, D=100, K=5
+        (10000, 100, 5),    # N=10k, D=100, K=5
+        (100000, 100, 5),   # N=100k, D=100, K=5
     ]
     
     def estimate_flops_and_bytes(N, D, K, cov_type):
@@ -558,7 +570,7 @@ def benchmark_bandwidth():
         return total_flops, total_bytes
     
     for N, D, K in test_configs:
-        for cov_type in ["diag", "tied", "full"]:
+        for cov_type in ["spherical", "diag", "tied", "full"]:
             print(f"\n--- Bandwidth: {cov_type}, N={N}, D={D}, K={K} ---")
             
             data = generate_test_data(N, D, K, device=device)
@@ -567,7 +579,9 @@ def benchmark_bandwidth():
             weights = data["weights"].clone()
             log_resp = data["log_resp"].clone()
             
-            if cov_type == "diag":
+            if cov_type == "spherical":
+                cov = data["cov_spherical"].clone()
+            elif cov_type == "diag":
                 cov = data["cov_diag"].clone()
             elif cov_type == "tied":
                 cov = data["cov_tied"].clone()
@@ -734,6 +748,11 @@ def main():
         ]
         df_speedup = df_speedup[column_order]
         
+        # Sort by covariance type (spherical, diag, tied, full, N/A), then N, then D
+        cov_type_order = {"spherical": 0, "diag": 1, "tied": 2, "full": 3, "N/A": 4}
+        df_speedup["_cov_order"] = df_speedup["Covariance Type"].map(cov_type_order)
+        df_speedup = df_speedup.sort_values(["_cov_order", "N", "D"]).drop("_cov_order", axis=1)
+        
         # Save speedup results to Excel
         output_file = os.path.join(os.path.dirname(__file__), "speedup_comparison.xlsx")
         with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
@@ -761,6 +780,11 @@ def main():
             "Device",
         ]
         df_memory = df_memory[column_order_mem]
+        
+        # Sort by covariance type (spherical, diag, tied, full), then N, then D
+        cov_type_order = {"spherical": 0, "diag": 1, "tied": 2, "full": 3}
+        df_memory["_cov_order"] = df_memory["Covariance Type"].map(cov_type_order)
+        df_memory = df_memory.sort_values(["_cov_order", "N", "D"]).drop("_cov_order", axis=1)
         
         output_file = os.path.join(os.path.dirname(__file__), "memory_comparison.xlsx")
         with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
@@ -791,6 +815,11 @@ def main():
             "Device",
         ]
         df_bandwidth = df_bandwidth[column_order_bw]
+        
+        # Sort by covariance type (spherical, diag, tied, full), then N, then D
+        cov_type_order = {"spherical": 0, "diag": 1, "tied": 2, "full": 3}
+        df_bandwidth["_cov_order"] = df_bandwidth["Covariance Type"].map(cov_type_order)
+        df_bandwidth = df_bandwidth.sort_values(["_cov_order", "N", "D"]).drop("_cov_order", axis=1)
         
         output_file = os.path.join(os.path.dirname(__file__), "bandwidth_comparison.xlsx")
         with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
