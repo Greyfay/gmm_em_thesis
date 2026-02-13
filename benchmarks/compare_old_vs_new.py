@@ -408,6 +408,216 @@ def benchmark_kmeans_lloyd():
     return results
 
 
+def benchmark_memory():
+    """Benchmark peak memory usage during operations.
+    
+    Uses torch.cuda.memory_allocated() for GPU or estimates for CPU.
+    """
+    print("\n" + "="*80)
+    print("BENCHMARK: MEMORY USAGE")
+    print("="*80)
+    
+    results = []
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    # Test configurations: (N, D, K)
+    test_configs = [
+        (1000, 20, 5),
+        (10000, 50, 5),
+        (10000, 100, 5),
+        (100000, 20, 5),
+    ]
+    
+    for N, D, K in test_configs:
+        for cov_type in ["diag", "tied", "full"]:
+            print(f"\n--- Memory: {cov_type}, N={N}, D={D}, K={K} ---")
+            
+            data = generate_test_data(N, D, K, device=device)
+            X = data["X"]
+            
+            # Clear cache
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats()
+            
+            # Measure old implementation
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats()
+            
+            model_old = old_impl.TorchGaussianMixture(
+                n_components=K,
+                covariance_type=cov_type,
+                max_iter=1,
+                n_init=1,
+                init_params="random",
+            )
+            torch.manual_seed(42)
+            model_old.fit(X)
+            
+            old_mem = torch.cuda.max_memory_allocated() if torch.cuda.is_available() else 0
+            
+            # Clear cache
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats()
+            
+            # Measure new implementation
+            model_new = new_impl.TorchGaussianMixture(
+                n_components=K,
+                covariance_type=cov_type,
+                max_iter=1,
+                n_init=1,
+                init_params="random",
+            )
+            torch.manual_seed(42)
+            model_new.fit(X)
+            
+            new_mem = torch.cuda.max_memory_allocated() if torch.cuda.is_available() else 0
+            
+            # Calculate memory reduction
+            mem_reduction = ((old_mem - new_mem) / old_mem * 100) if old_mem > 0 else 0
+            
+            old_mem_mb = old_mem / (1024**2) if torch.cuda.is_available() else 0
+            new_mem_mb = new_mem / (1024**2) if torch.cuda.is_available() else 0
+            
+            print(f"  Old: {old_mem_mb:.2f} MB")
+            print(f"  New: {new_mem_mb:.2f} MB")
+            print(f"  Reduction: {mem_reduction:.1f}%")
+            
+            results.append({
+                "Function": "TorchGaussianMixture.fit",
+                "Metric": "Peak Memory (MB)",
+                "Covariance Type": cov_type,
+                "N": N,
+                "D": D,
+                "K": K,
+                "Old Value": old_mem_mb,
+                "New Value": new_mem_mb,
+                "Reduction %": mem_reduction,
+                "Device": device,
+            })
+    
+    return results
+
+
+def benchmark_bandwidth():
+    """Benchmark memory bandwidth utilization.
+    
+    Estimates bytes read/written per second during operations.
+    For GPU, uses torch profiling if available, otherwise estimates from timing.
+    """
+    print("\n" + "="*80)
+    print("BENCHMARK: MEMORY BANDWIDTH")
+    print("="*80)
+    
+    results = []
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    # Test configurations: (N, D, K)
+    test_configs = [
+        (1000, 20, 5),
+        (10000, 50, 5),
+        (10000, 100, 5),
+        (100000, 20, 5),
+    ]
+    
+    def estimate_flops_and_bytes(N, D, K, cov_type):
+        """Estimate FLOPs and bytes for M-step (most compute-heavy operation)."""
+        # Log probability computation: N*K*D operations
+        log_prob_flops = N * K * D * 2
+        
+        # M-step updates
+        if cov_type == "spherical":
+            m_step_flops = N * K + K * D
+        elif cov_type == "diag":
+            m_step_flops = N * K * D + K * D
+        elif cov_type == "tied":
+            m_step_flops = N * K * D + D * D
+        else:  # full
+            m_step_flops = N * K * D + K * D * D
+        
+        total_flops = log_prob_flops + m_step_flops
+        
+        # Estimate bytes: read X, means, covariances; write intermediate results
+        bytes_read = N * D * 8 + K * D * 8  # X and means
+        if cov_type == "spherical":
+            bytes_read += K * 8
+            bytes_write = K * (D + 1) * 8
+        elif cov_type == "diag":
+            bytes_read += K * D * 8
+            bytes_write = K * D * 8
+        elif cov_type == "tied":
+            bytes_read += D * D * 8
+            bytes_write = D * D * 8 + K * 8
+        else:  # full
+            bytes_read += K * D * D * 8
+            bytes_write = K * D * D * 8 + K * 8
+        
+        total_bytes = bytes_read + bytes_write
+        return total_flops, total_bytes
+    
+    for N, D, K in test_configs:
+        for cov_type in ["diag", "tied", "full"]:
+            print(f"\n--- Bandwidth: {cov_type}, N={N}, D={D}, K={K} ---")
+            
+            data = generate_test_data(N, D, K, device=device)
+            X = data["X"]
+            means = data["means"].clone()
+            weights = data["weights"].clone()
+            log_resp = data["log_resp"].clone()
+            
+            if cov_type == "diag":
+                cov = data["cov_diag"].clone()
+            elif cov_type == "tied":
+                cov = data["cov_tied"].clone()
+            else:  # full
+                cov = data["cov_full"].clone()
+            
+            # Measure time for M-step (compute-heavy operation)
+            old_time_ms, _ = timer(
+                old_impl._maximization_step,
+                X, means.clone(), cov.clone(), weights.clone(), log_resp.clone(), cov_type,
+                n_runs=5, warmup=1
+            )
+            
+            new_time_ms, _ = timer(
+                new_impl._maximization_step,
+                X, means.clone(), cov.clone(), weights.clone(), log_resp.clone(), cov_type,
+                n_runs=5, warmup=1
+            )
+            
+            # Estimate theoretical bytes
+            _, est_bytes = estimate_flops_and_bytes(N, D, K, cov_type)
+            
+            # Calculate bandwidth (GB/s)
+            old_bw = (est_bytes / (1024**3)) / (old_time_ms / 1000)
+            new_bw = (est_bytes / (1024**3)) / (new_time_ms / 1000)
+            
+            bw_improvement = ((new_bw - old_bw) / old_bw * 100) if old_bw > 0 else 0
+            
+            print(f"  Old: {old_bw:.2f} GB/s (time: {old_time_ms:.3f} ms)")
+            print(f"  New: {new_bw:.2f} GB/s (time: {new_time_ms:.3f} ms)")
+            print(f"  Improvement: {bw_improvement:.1f}%")
+            print(f"  Est. bytes: {est_bytes / (1024**2):.1f} MB")
+            
+            results.append({
+                "Function": "_maximization_step",
+                "Metric": "Bandwidth (GB/s)",
+                "Covariance Type": cov_type,
+                "N": N,
+                "D": D,
+                "K": K,
+                "Old Value": old_bw,
+                "New Value": new_bw,
+                "Improvement %": bw_improvement,
+                "Estimated Bytes (MB)": est_bytes / (1024**2),
+                "Device": device,
+            })
+    
+    return results
+
+
 def benchmark_full_fit():
     """Benchmark full GMM fit (end-to-end)."""
     print("\n" + "="*80)
@@ -482,49 +692,115 @@ def main():
     
     # Collect all results
     all_results = []
+    speedup_results = []
+    memory_results = []
+    bandwidth_results = []
     
     # Run all benchmarks
-    all_results.extend(benchmark_precisions_cholesky())
-    all_results.extend(benchmark_precisions())
-    all_results.extend(benchmark_log_prob_tied())
-    all_results.extend(benchmark_log_prob_full())
-    all_results.extend(benchmark_m_step_diag())
-    all_results.extend(benchmark_m_step_tied())
-    all_results.extend(benchmark_m_step_full())
-    all_results.extend(benchmark_kmeans_lloyd())
-    all_results.extend(benchmark_full_fit())
+    speedup_results.extend(benchmark_precisions_cholesky())
+    speedup_results.extend(benchmark_precisions())
+    speedup_results.extend(benchmark_log_prob_tied())
+    speedup_results.extend(benchmark_log_prob_full())
+    speedup_results.extend(benchmark_m_step_diag())
+    speedup_results.extend(benchmark_m_step_tied())
+    speedup_results.extend(benchmark_m_step_full())
+    speedup_results.extend(benchmark_kmeans_lloyd())
+    speedup_results.extend(benchmark_full_fit())
+    
+    # Run memory and bandwidth benchmarks
+    memory_results.extend(benchmark_memory())
+    bandwidth_results.extend(benchmark_bandwidth())
     
     print("\n" + "="*80)
     print("BENCHMARKS COMPLETE")
     print("="*80)
     
-    # Convert to DataFrame and save to Excel
-    df = pd.DataFrame(all_results)
+    # Save speedup results
+    if speedup_results:
+        df_speedup = pd.DataFrame(speedup_results)
+        
+        # Reorder columns for better readability
+        column_order = [
+            "Function",
+            "Covariance Type",
+            "N",
+            "D",
+            "K",
+            "Old Time (ms)",
+            "Old Std (ms)",
+            "New Time (ms)",
+            "New Std (ms)",
+            "Speedup",
+        ]
+        df_speedup = df_speedup[column_order]
+        
+        # Save speedup results to Excel
+        output_file = os.path.join(os.path.dirname(__file__), "speedup_comparison.xlsx")
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            df_speedup.to_excel(writer, sheet_name="Speedup Results", index=False)
+        
+        print(f"\n✓ Speedup results exported to: {output_file}")
+        print(f"  Total speedup benchmarks: {len(df_speedup)}")
+        print(f"  Average speedup: {df_speedup['Speedup'].mean():.2f}x")
+        print(f"  Max speedup: {df_speedup['Speedup'].max():.2f}x")
+        print(f"  Min speedup: {df_speedup['Speedup'].min():.2f}x")
     
-    # Reorder columns for better readability
-    column_order = [
-        "Function",
-        "Covariance Type",
-        "N",
-        "D",
-        "K",
-        "Old Time (ms)",
-        "Old Std (ms)",
-        "New Time (ms)",
-        "New Std (ms)",
-        "Speedup",
-    ]
-    df = df[column_order]
+    # Save memory results
+    if memory_results:
+        df_memory = pd.DataFrame(memory_results)
+        column_order_mem = [
+            "Function",
+            "Metric",
+            "Covariance Type",
+            "N",
+            "D",
+            "K",
+            "Old Value",
+            "New Value",
+            "Reduction %",
+            "Device",
+        ]
+        df_memory = df_memory[column_order_mem]
+        
+        output_file = os.path.join(os.path.dirname(__file__), "memory_comparison.xlsx")
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            df_memory.to_excel(writer, sheet_name="Memory Results", index=False)
+        
+        print(f"\n✓ Memory results exported to: {output_file}")
+        print(f"  Total memory benchmarks: {len(df_memory)}")
+        print(f"  Average memory reduction: {df_memory['Reduction %'].mean():.1f}%")
+        if df_memory['Reduction %'].max() > 0:
+            print(f"  Max memory reduction: {df_memory['Reduction %'].max():.1f}%")
+        if df_memory['Reduction %'].min() < 0:
+            print(f"  Max memory increase: {-df_memory['Reduction %'].min():.1f}%")
     
-    # Save to Excel in the same directory as this script
-    output_file = os.path.join(os.path.dirname(__file__), "speedup_comparison.xlsx")
-    df.to_excel(output_file, index=False, sheet_name="Speedup Results")
-    
-    print(f"\n✓ Results exported to: {output_file}")
-    print(f"  Total benchmarks: {len(df)}")
-    print(f"  Average speedup: {df['Speedup'].mean():.2f}x")
-    print(f"  Max speedup: {df['Speedup'].max():.2f}x")
-    print(f"  Min speedup: {df['Speedup'].min():.2f}x")
+    # Save bandwidth results
+    if bandwidth_results:
+        df_bandwidth = pd.DataFrame(bandwidth_results)
+        column_order_bw = [
+            "Function",
+            "Metric",
+            "Covariance Type",
+            "N",
+            "D",
+            "K",
+            "Old Value",
+            "New Value",
+            "Improvement %",
+            "Estimated Bytes (MB)",
+            "Device",
+        ]
+        df_bandwidth = df_bandwidth[column_order_bw]
+        
+        output_file = os.path.join(os.path.dirname(__file__), "bandwidth_comparison.xlsx")
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            df_bandwidth.to_excel(writer, sheet_name="Bandwidth Results", index=False)
+        
+        print(f"\n✓ Bandwidth results exported to: {output_file}")
+        print(f"  Total bandwidth benchmarks: {len(df_bandwidth)}")
+        print(f"  Average bandwidth improvement: {df_bandwidth['Improvement %'].mean():.1f}%")
+        print(f"  Max bandwidth improvement: {df_bandwidth['Improvement %'].max():.1f}%")
+        print(f"  Min bandwidth improvement: {df_bandwidth['Improvement %'].min():.1f}%")
 
 
 if __name__ == "__main__":
