@@ -766,8 +766,9 @@ def run_comprehensive_analysis(device: str = "cpu", output_file: str = "parallel
     amdahl_df = amdahl.analyze_implementations(test_configs)
     component_df = amdahl.get_component_breakdown()
     
-    # 2. GPU Occupancy Analysis (random text)
+    # 2. GPU Occupancy Analysis
     gpu_df = pd.DataFrame()
+    print(f"\nDEBUG: device={device}, cuda_available={torch.cuda.is_available()}")
     if device == "cuda" and torch.cuda.is_available():
         try:
             print("\n" + "="*80)
@@ -782,6 +783,8 @@ def run_comprehensive_analysis(device: str = "cpu", output_file: str = "parallel
             print("Continuing with remaining analyses...")
             import traceback
             traceback.print_exc()
+    else:
+        print(f"Skipping GPU occupancy analysis: device={device}, cuda_available={torch.cuda.is_available()}")
     
     # 3. Kernel Fusion Analysis
     fusion_df = pd.DataFrame()
@@ -799,6 +802,8 @@ def run_comprehensive_analysis(device: str = "cpu", output_file: str = "parallel
             print("Continuing with export...")
             import traceback
             traceback.print_exc()
+    else:
+        print(f"Skipping kernel fusion analysis: device={device}, cuda_available={torch.cuda.is_available()}")
     
     # Export to Excel
     print("\n" + "="*80)
