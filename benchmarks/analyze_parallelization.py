@@ -856,6 +856,7 @@ def run_comprehensive_analysis(device: str = "cpu", output_file: str = "parallel
 def main():
     """Main entry point."""
     import argparse
+    import sys
     
     parser = argparse.ArgumentParser(description="Analyze parallelization benefits")
     parser.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda"],
@@ -867,6 +868,11 @@ def main():
                             "If not provided, estimates based on compute capability.")
     
     args = parser.parse_args()
+    
+    print(f"DEBUG: sys.argv = {sys.argv}")
+    print(f"DEBUG: parsed args.device = {args.device}")
+    print(f"DEBUG: parsed args.output = {args.output}")
+    print(f"DEBUG: parsed args.peak_bandwidth = {args.peak_bandwidth}")
     
     run_comprehensive_analysis(device=args.device, output_file=args.output, 
                               peak_bandwidth=args.peak_bandwidth)
