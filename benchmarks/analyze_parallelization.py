@@ -388,8 +388,9 @@ class GPUProfiler:
         cuda_time = 0
         cpu_time = 0
         for evt in events:
-            cuda_time += evt.cuda_time_total
-            cpu_time += evt.cpu_time_total
+            # Use self_cuda_time_total and self_cpu_time_total for averaged events
+            cuda_time += getattr(evt, 'self_cuda_time_total', 0) or getattr(evt, 'cuda_time_total', 0)
+            cpu_time += getattr(evt, 'self_cpu_time_total', 0) or getattr(evt, 'cpu_time_total', 0)
         
         # Convert to ms
         cuda_time_ms = cuda_time / 1000
@@ -554,9 +555,11 @@ class KernelFusionAnalyzer:
         for evt in prof.key_averages():
             if evt.device_type == torch.profiler.DeviceType.CUDA:
                 kernel_count += 1
-                kernel_time = evt.cuda_time_total / 1000  # Convert to ms
-                total_kernel_time += kernel_time
-                kernel_times.append(kernel_time)
+                # Use self_cuda_time_total for averaged events
+                kernel_time = getattr(evt, 'self_cuda_time_total', 0) or getattr(evt, 'cuda_time_total', 0)
+                kernel_time_ms = kernel_time / 1000  # Convert to ms
+                total_kernel_time += kernel_time_ms
+                kernel_times.append(kernel_time_ms)
         
         avg_kernel_time = total_kernel_time / kernel_count if kernel_count > 0 else 0
         
