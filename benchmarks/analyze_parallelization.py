@@ -823,6 +823,9 @@ def run_comprehensive_analysis(device: str = "cpu", output_file: str = "parallel
     print("\n" + "="*80)
     print("EXPORTING TO EXCEL")
     print("="*80)
+    print(f"DEBUG EXPORT: gpu_df.empty={gpu_df.empty}, len(gpu_df)={len(gpu_df)}")
+    print(f"DEBUG EXPORT: fusion_df.empty={fusion_df.empty}, len(fusion_df)={len(fusion_df)}")
+    print(f"DEBUG EXPORT: amdahl_df.empty={amdahl_df.empty}, len(amdahl_df)={len(amdahl_df)}")
     
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
         # Summary sheet
