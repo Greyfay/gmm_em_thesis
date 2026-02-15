@@ -766,7 +766,7 @@ def run_comprehensive_analysis(device: str = "cpu", output_file: str = "parallel
     amdahl_df = amdahl.analyze_implementations(test_configs)
     component_df = amdahl.get_component_breakdown()
     
-    # 2. GPU Occupancy Analysis
+    # 2. GPU Occupancy Analysis (random text)
     gpu_df = pd.DataFrame()
     if device == "cuda" and torch.cuda.is_available():
         try:
