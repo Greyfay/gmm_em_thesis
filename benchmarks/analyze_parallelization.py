@@ -756,13 +756,24 @@ def run_comprehensive_analysis(device: str = "cpu", output_file: str = "parallel
         print(f"SMs: {gpu_specs['multiprocessor_count']}")
         print(f"Peak Bandwidth: {gpu_specs['memory_bandwidth_gbs']:.1f} GB/s ({gpu_specs.get('bandwidth_note', 'estimated')})")
     
-    # Test configurations
+    # Test configurations - same 3 configurations for each covariance type
     test_configs = [
+        # Full covariance
         (1000, 50, 5, "full"),
         (2000, 100, 10, "full"),
         (5000, 50, 5, "full"),
+        # Diagonal covariance
         (1000, 50, 5, "diag"),
+        (2000, 100, 10, "diag"),
+        (5000, 50, 5, "diag"),
+        # Tied covariance
+        (1000, 50, 5, "tied"),
         (2000, 100, 10, "tied"),
+        (5000, 50, 5, "tied"),
+        # Spherical covariance
+        (1000, 50, 5, "spherical"),
+        (2000, 100, 10, "spherical"),
+        (5000, 50, 5, "spherical"),
     ]
     
     # 1. Amdahl's Law Analysis
