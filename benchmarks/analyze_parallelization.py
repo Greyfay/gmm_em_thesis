@@ -450,8 +450,10 @@ class GPUProfiler:
         device: str = "cuda",
     ) -> pd.DataFrame:
         """Analyze GPU utilization for different operations."""
+        print(f"\nDEBUG: analyze_gpu_utilization called with device={device}")
+        print(f"DEBUG: torch.cuda.is_available()={torch.cuda.is_available()}")
         if not torch.cuda.is_available():
-            print("CUDA not available, skipping GPU analysis")
+            print("DEBUG: CUDA not available in analyze_gpu_utilization, returning empty dataframe")
             return pd.DataFrame()
         
         results = []
@@ -641,8 +643,10 @@ class KernelFusionAnalyzer:
         test_configs: List[Tuple[int, int, int, str]],
     ) -> pd.DataFrame:
         """Analyze kernel fusion opportunities."""
+        print(f"\nDEBUG: analyze_fusion_opportunities called")
+        print(f"DEBUG: torch.cuda.is_available()={torch.cuda.is_available()}")
         if not torch.cuda.is_available():
-            print("CUDA not available, skipping kernel fusion analysis")
+            print("DEBUG: CUDA not available in analyze_fusion_opportunities, returning empty dataframe")
             return pd.DataFrame()
         
         results = []
@@ -771,13 +775,17 @@ def run_comprehensive_analysis(device: str = "cpu", output_file: str = "parallel
     
     # 2. GPU Occupancy Analysis
     gpu_df = pd.DataFrame()
+    print(f"\nDEBUG GPU: device={device}, torch.cuda.is_available()={torch.cuda.is_available()}")
     if device == "cuda" and torch.cuda.is_available():
         try:
+            print("DEBUG GPU: Entering GPU analysis...")
             print("\n" + "="*80)
             print("2. GPU OCCUPANCY & MEMORY BANDWIDTH ANALYSIS")
             print("="*80)
             gpu_profiler = GPUProfiler(peak_bandwidth)
+            print(f"DEBUG GPU: Created profiler with peak_bandwidth={peak_bandwidth}")
             gpu_df = gpu_profiler.analyze_gpu_utilization(test_configs, device=device)
+            print(f"DEBUG GPU: Completed analysis, returned {len(gpu_df)} rows")
             if gpu_df.empty:
                 print("⚠ Warning: GPU analysis returned no data")
         except Exception as e:
@@ -786,17 +794,21 @@ def run_comprehensive_analysis(device: str = "cpu", output_file: str = "parallel
             import traceback
             traceback.print_exc()
     else:
-        print(f"Skipping GPU occupancy analysis: device={device}, cuda_available={torch.cuda.is_available()}")
+        print(f"DEBUG GPU: Skipping GPU analysis - device={device}, cuda_available={torch.cuda.is_available()}")
     
     # 3. Kernel Fusion Analysis
     fusion_df = pd.DataFrame()
+    print(f"\nDEBUG FUSION: device={device}, torch.cuda.is_available()={torch.cuda.is_available()}")
     if device == "cuda" and torch.cuda.is_available():
         try:
+            print("DEBUG FUSION: Entering kernel fusion analysis...")
             print("\n" + "="*80)
             print("3. KERNEL FUSION IMPACT ANALYSIS")
             print("="*80)
             fusion_analyzer = KernelFusionAnalyzer(device=device)
+            print("DEBUG FUSION: Created analyzer")
             fusion_df = fusion_analyzer.analyze_fusion_opportunities(test_configs)
+            print(f"DEBUG FUSION: Completed analysis, returned {len(fusion_df)} rows")
             if fusion_df.empty:
                 print("⚠ Warning: Kernel fusion analysis returned no data")
         except Exception as e:
@@ -805,7 +817,7 @@ def run_comprehensive_analysis(device: str = "cpu", output_file: str = "parallel
             import traceback
             traceback.print_exc()
     else:
-        print(f"Skipping kernel fusion analysis: device={device}, cuda_available={torch.cuda.is_available()}")
+        print(f"DEBUG FUSION: Skipping kernel fusion analysis - device={device}, cuda_available={torch.cuda.is_available()}")
     
     # Export to Excel
     print("\n" + "="*80)
