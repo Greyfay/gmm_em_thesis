@@ -103,20 +103,38 @@ def timer(func, *args, n_runs: int = 10, warmup: int = 2, **kwargs) -> Tuple[flo
     return np.mean(times), np.std(times)
 
 
-def get_gpu_specs() -> Dict[str, Any]:
-    """Get GPU specifications if available."""
+def get_gpu_specs(peak_bandwidth: Optional[float] = None) -> Dict[str, Any]:
+    """Get GPU specifications if available.
+    
+    Args:
+        peak_bandwidth: Peak memory bandwidth in GB/s. If None, estimates based on compute capability.
+    """
     if not torch.cuda.is_available():
         return {"available": False}
     
+    device_count = torch.cuda.device_count()
     props = torch.cuda.get_device_properties(0)
+    
+    # Use provided bandwidth or estimate based on GPU generation
+    if peak_bandwidth is None:
+        # Rough estimates by compute capability
+        estimated_bandwidth = 900 if props.major >= 8 else 600 if props.major >= 7 else 300
+        bandwidth_note = "estimated"
+    else:
+        estimated_bandwidth = peak_bandwidth
+        bandwidth_note = "user-provided"
+    
     return {
         "available": True,
+        "device_count": device_count,
+        "device_id": 0,  # Analysis runs on GPU 0
         "name": props.name,
         "compute_capability": f"{props.major}.{props.minor}",
         "total_memory_gb": props.total_memory / (1024**3),
         "multiprocessor_count": props.multi_processor_count,
         "max_threads_per_multiprocessor": props.max_threads_per_multi_processor,
-        "memory_bandwidth_gbs": props.memory_bandwidth / (1024**3),  # Approximate
+        "memory_bandwidth_gbs": estimated_bandwidth,
+        "bandwidth_note": bandwidth_note,
     }
 
 
@@ -340,8 +358,8 @@ class AmdahlAnalyzer:
 class GPUProfiler:
     """Profile GPU occupancy and memory bandwidth utilization."""
     
-    def __init__(self):
-        self.gpu_specs = get_gpu_specs()
+    def __init__(self, peak_bandwidth: Optional[float] = None):
+        self.gpu_specs = get_gpu_specs(peak_bandwidth)
         self.results = []
     
     def profile_with_pytorch_profiler(
@@ -711,7 +729,8 @@ class KernelFusionAnalyzer:
 # Main Analysis & Excel Export
 # ============================================================================
 
-def run_comprehensive_analysis(device: str = "cpu", output_file: str = "parallelization_analysis.xlsx"):
+def run_comprehensive_analysis(device: str = "cpu", output_file: str = "parallelization_analysis.xlsx", 
+                              peak_bandwidth: Optional[float] = None):
     """Run all analyses and export to Excel."""
     print("="*80)
     print("COMPREHENSIVE PARALLELIZATION ANALYSIS")
@@ -720,12 +739,15 @@ def run_comprehensive_analysis(device: str = "cpu", output_file: str = "parallel
     print(f"Output: {output_file}")
     
     # GPU specs
-    gpu_specs = get_gpu_specs()
+    gpu_specs = get_gpu_specs(peak_bandwidth)
     print(f"\nGPU Available: {gpu_specs['available']}")
     if gpu_specs['available']:
         print(f"GPU: {gpu_specs['name']}")
+        if gpu_specs.get('device_count', 1) > 1:
+            print(f"Devices: {gpu_specs['device_count']} GPUs detected (using GPU 0)")
         print(f"Memory: {gpu_specs['total_memory_gb']:.2f} GB")
         print(f"SMs: {gpu_specs['multiprocessor_count']}")
+        print(f"Peak Bandwidth: {gpu_specs['memory_bandwidth_gbs']:.1f} GB/s ({gpu_specs.get('bandwidth_note', 'estimated')})")
     
     # Test configurations
     test_configs = [
@@ -750,7 +772,7 @@ def run_comprehensive_analysis(device: str = "cpu", output_file: str = "parallel
         print("\n" + "="*80)
         print("2. GPU OCCUPANCY & MEMORY BANDWIDTH ANALYSIS")
         print("="*80)
-        gpu_profiler = GPUProfiler()
+        gpu_profiler = GPUProfiler(peak_bandwidth)
         gpu_df = gpu_profiler.analyze_gpu_utilization(test_configs, device=device)
     
     # 3. Kernel Fusion Analysis
@@ -819,10 +841,14 @@ def main():
                        help="Device to run analysis on")
     parser.add_argument("--output", type=str, default="parallelization_analysis.xlsx",
                        help="Output Excel file")
+    parser.add_argument("--peak-bandwidth", type=float, default=None,
+                       help="Peak GPU memory bandwidth in GB/s (e.g., 616 for RTX 2080 Ti). "
+                            "If not provided, estimates based on compute capability.")
     
     args = parser.parse_args()
     
-    run_comprehensive_analysis(device=args.device, output_file=args.output)
+    run_comprehensive_analysis(device=args.device, output_file=args.output, 
+                              peak_bandwidth=args.peak_bandwidth)
 
 
 if __name__ == "__main__":
