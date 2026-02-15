@@ -771,7 +771,6 @@ def run_comprehensive_analysis(device: str = "cpu", output_file: str = "parallel
     
     # 2. GPU Occupancy Analysis
     gpu_df = pd.DataFrame()
-    print(f"\nDEBUG: device={device}, cuda_available={torch.cuda.is_available()}")
     if device == "cuda" and torch.cuda.is_available():
         try:
             print("\n" + "="*80)
@@ -858,27 +857,13 @@ def run_comprehensive_analysis(device: str = "cpu", output_file: str = "parallel
 
 def main():
     """Main entry point."""
-    import argparse
-    import sys
+    # Hardcoded for consistent SSH setup
+    device = "cuda"
+    peak_bandwidth = 616  # RTX 2080 Ti
+    output_file = "results/parallelization_analysis.xlsx"
     
-    parser = argparse.ArgumentParser(description="Analyze parallelization benefits")
-    parser.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda"],
-                       help="Device to run analysis on")
-    parser.add_argument("--output", type=str, default="parallelization_analysis.xlsx",
-                       help="Output Excel file")
-    parser.add_argument("--peak-bandwidth", type=float, default=None,
-                       help="Peak GPU memory bandwidth in GB/s (e.g., 616 for RTX 2080 Ti). "
-                            "If not provided, estimates based on compute capability.")
-    
-    args = parser.parse_args()
-    
-    print(f"DEBUG: sys.argv = {sys.argv}")
-    print(f"DEBUG: parsed args.device = {args.device}")
-    print(f"DEBUG: parsed args.output = {args.output}")
-    print(f"DEBUG: parsed args.peak_bandwidth = {args.peak_bandwidth}")
-    
-    run_comprehensive_analysis(device=args.device, output_file=args.output, 
-                              peak_bandwidth=args.peak_bandwidth)
+    run_comprehensive_analysis(device=device, output_file=output_file, 
+                              peak_bandwidth=peak_bandwidth)
 
 
 if __name__ == "__main__":
