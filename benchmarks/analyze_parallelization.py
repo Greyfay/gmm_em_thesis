@@ -769,20 +769,36 @@ def run_comprehensive_analysis(device: str = "cpu", output_file: str = "parallel
     # 2. GPU Occupancy Analysis
     gpu_df = pd.DataFrame()
     if device == "cuda" and torch.cuda.is_available():
-        print("\n" + "="*80)
-        print("2. GPU OCCUPANCY & MEMORY BANDWIDTH ANALYSIS")
-        print("="*80)
-        gpu_profiler = GPUProfiler(peak_bandwidth)
-        gpu_df = gpu_profiler.analyze_gpu_utilization(test_configs, device=device)
+        try:
+            print("\n" + "="*80)
+            print("2. GPU OCCUPANCY & MEMORY BANDWIDTH ANALYSIS")
+            print("="*80)
+            gpu_profiler = GPUProfiler(peak_bandwidth)
+            gpu_df = gpu_profiler.analyze_gpu_utilization(test_configs, device=device)
+            if gpu_df.empty:
+                print("⚠ Warning: GPU analysis returned no data")
+        except Exception as e:
+            print(f"⚠ GPU occupancy analysis failed: {e}")
+            print("Continuing with remaining analyses...")
+            import traceback
+            traceback.print_exc()
     
     # 3. Kernel Fusion Analysis
     fusion_df = pd.DataFrame()
     if device == "cuda" and torch.cuda.is_available():
-        print("\n" + "="*80)
-        print("3. KERNEL FUSION IMPACT ANALYSIS")
-        print("="*80)
-        fusion_analyzer = KernelFusionAnalyzer(device=device)
-        fusion_df = fusion_analyzer.analyze_fusion_opportunities(test_configs)
+        try:
+            print("\n" + "="*80)
+            print("3. KERNEL FUSION IMPACT ANALYSIS")
+            print("="*80)
+            fusion_analyzer = KernelFusionAnalyzer(device=device)
+            fusion_df = fusion_analyzer.analyze_fusion_opportunities(test_configs)
+            if fusion_df.empty:
+                print("⚠ Warning: Kernel fusion analysis returned no data")
+        except Exception as e:
+            print(f"⚠ Kernel fusion analysis failed: {e}")
+            print("Continuing with export...")
+            import traceback
+            traceback.print_exc()
     
     # Export to Excel
     print("\n" + "="*80)
