@@ -13,7 +13,7 @@ import torch
 from torch.profiler import profile, ProfilerActivity
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from implementation._torch_gmm_em import TorchGaussianMixture  # noqa: E402
+from implementation._v1 import TorchGaussianMixture  # noqa: E402
 
 OUTDIR = Path("profiles")
 OUTDIR.mkdir(exist_ok=True)

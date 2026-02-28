@@ -22,10 +22,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 # Import old (loop-based) implementation
-from implementation import _torch_gmm_em_old as old_impl
+from implementation import _v0_ref as old_impl
 
 # Import new (parallelized) implementation
-from implementation import _torch_gmm_em as new_impl
+from implementation import _v1 as new_impl
 
 
 def timer(func: Callable, *args, n_runs: int = 10, warmup: int = 2, **kwargs) -> Tuple[float, float]:

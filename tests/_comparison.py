@@ -22,7 +22,7 @@ from sklearn.mixture._gaussian_mixture import (
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from implementation._torch_gmm_em import (
+from implementation._v1 import (
     TorchGaussianMixture,
     _estimate_log_gaussian_prob_precchol,
     _expectation_step_precchol,

@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 import numpy as np
-from implementation._torch_gmm_em import TorchGaussianMixture
+from implementation._v1 import TorchGaussianMixture
 
 # Generate synthetic data
 np.random.seed(123)

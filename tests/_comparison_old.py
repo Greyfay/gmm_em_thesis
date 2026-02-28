@@ -12,7 +12,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 # ---- your torch kernels ----
-from implementation._torch_gmm_em import (
+from implementation._v1 import (
     _estimate_log_gaussian_prob_diag_precchol as _estimate_log_gaussian_prob_diag,
     _estimate_log_gaussian_prob_spherical_precchol as _estimate_log_gaussian_prob_spherical,
     _estimate_log_gaussian_prob_tied_precchol as _estimate_log_gaussian_prob_tied,

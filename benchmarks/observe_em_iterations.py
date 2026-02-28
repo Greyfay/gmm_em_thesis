@@ -7,7 +7,7 @@ import torch
 from sklearn.mixture import GaussianMixture
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from implementation._torch_gmm_em import TorchGaussianMixture
+from implementation._v1 import TorchGaussianMixture
 
 
 def reorder_gmm_components(weights, means, covariances=None):

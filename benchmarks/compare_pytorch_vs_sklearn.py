@@ -27,7 +27,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 # Import unoptimized PyTorch implementation
-from implementation import _torch_gmm_em_old as torch_impl
+from implementation import _v0_ref as torch_impl
 
 
 def timer(func: Callable, *args, n_runs: int = 5, warmup: int = 1, **kwargs) -> Tuple[float, float]:

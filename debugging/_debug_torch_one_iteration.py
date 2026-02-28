@@ -6,7 +6,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from implementation._torch_gmm_em import (
+from implementation._v1 import (
     _expectation_step,
     _maximization_step,
     pretty
