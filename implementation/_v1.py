@@ -49,7 +49,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
-from sklearn.cluster import KMeans, kmeans_plusplus
+from sklearn.cluster import KMeans
 
 
 # ---------------------------
@@ -162,7 +162,8 @@ def _estimate_log_gaussian_prob_diag_precchol(
     mahal = torch.sum(y * y, dim=2)             # (N,K)
 
     # 0.5 * logdet(precision) = sum_d log(prec_chol_{k,d})
-    log_det_term = torch.sum(torch.log(precisions_chol), dim=1)  # (K,)
+    tiny = torch.finfo(precisions_chol.dtype).tiny
+    log_det_term = torch.sum(torch.log(precisions_chol.clamp_min(tiny)), dim=1)  # (K,)
 
     return -0.5 * (D * math.log(2 * math.pi) + mahal) + log_det_term.unsqueeze(0)
 
@@ -183,7 +184,8 @@ def _estimate_log_gaussian_prob_spherical_precchol(
     mahal = torch.sum(y * y, dim=2)             # (N,K)
 
     # sum log diag(P) where P = prec_chol * I -> D * log(prec_chol)
-    log_det_term = D * torch.log(precisions_chol)  # (K,)
+    tiny = torch.finfo(precisions_chol.dtype).tiny
+    log_det_term = D * torch.log(precisions_chol.clamp_min(tiny))  # (K,)
 
     return -0.5 * (D * math.log(2 * math.pi) + mahal) + log_det_term.unsqueeze(0)
 
@@ -200,14 +202,16 @@ def _estimate_log_gaussian_prob_tied_precchol(
     assert precisions_chol.shape == (D, D)
 
     # log_det_term = sum log diag(prec_chol)
-    log_det_term = torch.sum(torch.log(torch.diagonal(precisions_chol)))
+    tiny = torch.finfo(precisions_chol.dtype).tiny
+    diagP = torch.diagonal(precisions_chol).clamp_min(tiny)
+    log_det_term = diagP.log().sum()
 
     diff = X.unsqueeze(1) - means.unsqueeze(0)  # (N,K,D)
 
     # y = diff @ P^T using einsum for all components at once
     # diff: (N,K,D), precisions_chol: (D,D)
     # y[n,k,:] = diff[n,k,:] @ P^T
-    y = torch.einsum('nkd,ed->nke', diff, precisions_chol)  # (N,K,D)
+    y = torch.einsum('nkd,de->nke', diff, precisions_chol)    
     mahal = torch.sum(y * y, dim=2)  # (N,K)
 
     return -0.5 * (D * math.log(2 * math.pi) + mahal) + log_det_term
@@ -228,7 +232,9 @@ def _estimate_log_gaussian_prob_full_precchol(
 
     # Compute log determinant terms for all components at once
     # precisions_chol: (K,D,D), extract diagonals: (K,D)
-    log_det_term = torch.sum(torch.log(torch.diagonal(precisions_chol, dim1=1, dim2=2)), dim=1)  # (K,)
+    tiny = torch.finfo(precisions_chol.dtype).tiny
+    diagP = torch.diagonal(precisions_chol, dim1=1, dim2=2).clamp_min(tiny)
+    log_det_term = diagP.log().sum(dim=1)
 
     # Compute Mahalanobis distance using einsum
     # y[n,k,:] = diff[n,k,:] @ P[k]^T
@@ -554,14 +560,12 @@ class TorchGaussianMixture:
             if precisions.shape != (D, D):
                 raise ValueError(f"precisions_init must have shape (D,D) for tied, got {tuple(precisions.shape)}")
             cov = torch.linalg.inv(precisions)
-            cov = _add_reg_diag(cov, self.reg_covar)
             return cov
 
         # full
         if precisions.shape != (K, D, D):
             raise ValueError(f"precisions_init must have shape (K,D,D) for full, got {tuple(precisions.shape)}")
         cov = torch.linalg.inv(precisions)
-        cov = _add_reg_diag(cov, self.reg_covar)
         return cov
 
     @torch.no_grad()
@@ -664,23 +668,26 @@ class TorchGaussianMixture:
             return self._initialize_from_log_resp(X, log_resp)
 
         # random_from_data
-        idx = torch.randperm(N, device=X.device)[:K]
-        means = X[idx].clone()
-        weights = torch.full((K,), 1.0 / K, device=X.device, dtype=X.dtype)
+        if self.init_params == "random_from_data":
+            idx = torch.randperm(N, device=X.device)[:K]
+            means = X[idx].clone()
+            weights = torch.full((K,), 1.0 / K, device=X.device, dtype=X.dtype)
 
-        Xc = X - X.mean(dim=0, keepdim=True)
-        if self.covariance_type in ("tied", "full"):
-            cov_global = (Xc.T @ Xc) / max(N - 1, 1)
-            cov_global = _add_reg_diag(cov_global, self.reg_covar)
-            cov = cov_global if self.covariance_type == "tied" else cov_global.unsqueeze(0).expand(K, D, D).contiguous()
-        elif self.covariance_type == "diag":
-            var = Xc.var(dim=0, unbiased=False) + self.reg_covar
-            cov = var.unsqueeze(0).expand(K, D).contiguous()
-        else:
-            var = Xc.var(dim=0, unbiased=False).mean() + self.reg_covar
-            cov = torch.full((K,), var, device=X.device, dtype=X.dtype)
+            Xc = X - X.mean(dim=0, keepdim=True)
+            if self.covariance_type in ("tied", "full"):
+                cov_global = (Xc.T @ Xc) / max(N - 1, 1)
+                cov_global = _add_reg_diag(cov_global, self.reg_covar)
+                cov = cov_global if self.covariance_type == "tied" else cov_global.unsqueeze(0).expand(K, D, D).contiguous()
+            elif self.covariance_type == "diag":
+                var = Xc.var(dim=0, unbiased=False) + self.reg_covar
+                cov = var.unsqueeze(0).expand(K, D).contiguous()
+            else:
+                var = Xc.var(dim=0, unbiased=False).mean() + self.reg_covar
+                cov = torch.full((K,), var, device=X.device, dtype=X.dtype)
 
-        return self._make_params(weights, means, cov)
+            return self._make_params(weights, means, cov)
+
+        raise RuntimeError(f"Unhandled init_params={self.init_params!r}")
 
     # -----------------------
     # Public API
