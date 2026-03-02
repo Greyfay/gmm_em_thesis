@@ -116,7 +116,7 @@ def benchmark_estep_vs_d(
         n_runs: Number of timing runs per configuration
     """
     if D_values is None:
-        D_values = [10, 100, 1000, 10000]
+        D_values = [10, 100, 1000, 10000, 100000, 1000000]
     
     print("=" * 80)
     print(f"BENCHMARK: E-Step Runtime vs. D (Full Covariance)")
@@ -218,7 +218,7 @@ def run_benchmark():
     device = "cuda"
     
     # Test D values in factors of 10
-    D_values = [10, 100, 1000, 10000]
+    D_values = [10, 100, 1000, 10000, 100000, 1000000]
     
     print("\n" + "=" * 80)
     print("Testing E-Step vs. D (Full Covariance)")
