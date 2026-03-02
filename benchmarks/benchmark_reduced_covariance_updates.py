@@ -38,12 +38,17 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR = Path("results")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# Device detection
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# Enforce GPU-only execution
+if not torch.cuda.is_available():
+    raise RuntimeError(
+        "CUDA is not available. This benchmark requires a GPU to run.\n"
+        "Please run on a machine with CUDA-capable GPU."
+    )
+
+DEVICE = torch.device("cuda")
 print(f"Using device: {DEVICE}")
-if torch.cuda.is_available():
-    print(f"GPU: {torch.cuda.get_device_name(0)}")
-    print(f"CUDA version: {torch.version.cuda}")
+print(f"GPU: {torch.cuda.get_device_name(0)}")
+print(f"CUDA version: {torch.version.cuda}")
 
 
 def generate_synthetic_gmm_data(
@@ -70,8 +75,7 @@ def generate_synthetic_gmm_data(
     torch.manual_seed(seed)
     np.random.seed(seed)
     
-    if device is None:
-        device = DEVICE
+    device = DEVICE if device is None else device
     
     # Generate cluster centers
     means = torch.randn(K, D, device=device, dtype=dtype) * 5
@@ -151,14 +155,12 @@ def run_single_experiment(
         )
     
     # Time the fitting
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+    torch.cuda.synchronize()
     
     start_time = time.perf_counter()
     model.fit(X)
     
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+    torch.cuda.synchronize()
     
     end_time = time.perf_counter()
     
@@ -368,11 +370,12 @@ def run_comprehensive_benchmark():
     all_results = []
     
     # Test configurations: (N, D, K, cov_type, max_iter)
+    # Only testing full covariance type
     test_configs = [
         (1000, 5, 3, "full", 100),
         (2000, 10, 5, "full", 100),
-        (1000, 10, 5, "diag", 100),
         (2000, 20, 5, "full", 100),
+        (3000, 15, 5, "full", 100),
     ]
     
     for i, (N, D, K, cov_type, max_iter) in enumerate(test_configs):
@@ -419,15 +422,11 @@ def run_comprehensive_benchmark():
 
 
 if __name__ == "__main__":
-    print("Starting benchmark: Reduced Covariance Update Frequency")
+    print("Starting benchmark: Reduced Covariance Update Frequency (GPU-only)")
     print(f"Device: {DEVICE}")
     print(f"PyTorch version: {torch.__version__}")
     print(f"Default dtype: {torch.get_default_dtype()}")
-    if torch.cuda.is_available():
-        print(f"CUDA available: Yes")
-        print(f"Number of GPUs: {torch.cuda.device_count()}")
-    else:
-        print(f"CUDA available: No")
+    print(f"Number of GPUs: {torch.cuda.device_count()}")
     print()
     
     # Run comprehensive benchmark
