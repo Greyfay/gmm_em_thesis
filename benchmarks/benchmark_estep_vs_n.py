@@ -113,7 +113,7 @@ def benchmark_estep_vs_n(
     D: int = 50,
     cov_type: str = "full",
     N_values: list = None,
-    device: str = "cpu",
+    device: str = "cuda",
     n_runs: int = 10,
 ):
     """Benchmark E-step runtime vs. N for fixed K and D.
@@ -127,7 +127,7 @@ def benchmark_estep_vs_n(
         n_runs: Number of timing runs per configuration
     """
     if N_values is None:
-        N_values = [100, 500, 1000, 2000, 5000, 10000, 20000, 50000]
+        N_values = [100, 1000, 10000, 100000, 1000000]
     
     print("=" * 80)
     print(f"BENCHMARK: E-Step Runtime vs. N")
@@ -221,14 +221,14 @@ def run_all_benchmarks():
     # Configuration
     K = 5
     D = 50
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    # Test different N values with more granularity
-    N_values = [100, 500, 1000, 2000, 5000, 10000, 20000, 50000]
+    # Force GPU usage - will fail if not available
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is not available. This benchmark requires a GPU.")
+    device = "cuda"
     
-    if device == "cpu":
-        # Use fewer large values for CPU
-        N_values = [100, 500, 1000, 2000, 5000, 10000]
+    # Test N values in factors of 10
+    N_values = [100, 1000, 10000, 100000, 1000000]
     
     all_results = []
     
@@ -243,7 +243,7 @@ def run_all_benchmarks():
             cov_type=cov_type,
             N_values=N_values,
             device=device,
-            n_runs=10 if device == "cpu" else 20,  # More runs on GPU for stability
+            n_runs=20,  # More runs on GPU for stability
         )
         
         all_results.append(df)
@@ -322,7 +322,12 @@ if __name__ == "__main__":
     print("=" * 80)
     print()
     
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if not torch.cuda.is_available():
+        print("ERROR: CUDA is not available. This benchmark requires a GPU.")
+        print("Please run on a machine with GPU support.")
+        sys.exit(1)
+    
+    device = "cuda"
     print(f"Using device: {device}")
     print()
     
