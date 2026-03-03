@@ -15,12 +15,9 @@ The goal is to understand how reducing covariance update frequency affects:
 import os
 import sys
 from pathlib import Path
-import random
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple
 
-# Must be set before CUDA context init for determinism in some GEMMs
-os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
@@ -32,6 +29,10 @@ sys.path.insert(0, ROOT)
 # Import implementations
 from implementation._v1 import TorchGaussianMixture as TorchGaussianMixture_v1
 from implementation._v2 import TorchGaussianMixture as TorchGaussianMixture_v2
+
+# Output directories
+RESULTS_DIR = Path("results/figures")
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 DATA_DIR = Path("results")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -47,24 +48,6 @@ DEVICE = torch.device("cuda")
 print(f"Using device: {DEVICE}")
 print(f"GPU: {torch.cuda.get_device_name(0)}")
 print(f"CUDA version: {torch.version.cuda}")
-
-# Optional: enforce deterministic CUDA algorithms (slower, but stabilizes randomness)
-DETERMINISTIC = True
-if DETERMINISTIC:
-    try:
-        torch.use_deterministic_algorithms(True)
-    except Exception as e:
-        print(f"[warn] Could not enable deterministic algorithms: {e}")
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-
-def seed_all(seed: int) -> None:
-    """Seed all RNG sources: Python random, NumPy, PyTorch CPU, and PyTorch CUDA."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
 
 
 def generate_synthetic_gmm_data(
@@ -88,7 +71,8 @@ def generate_synthetic_gmm_data(
     Returns:
         X: Generated data (N, D)
     """
-    seed_all(seed)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
     
     device = DEVICE if device is None else device
     
@@ -122,13 +106,14 @@ def get_initialized_parameters(
     X: torch.Tensor,
     n_components: int,
     covariance_type: str,
-    seed: int,
+    seed: int = 42,
 ) -> Dict:
     """
-    Generate initialized parameters (GMMParams) via v1._initialize(X)
-    using a specific seed. This is the ONLY randomness source for runs.
+    Generate initialized parameters WITHOUT performing a full EM iteration.
     """
-    seed_all(seed)
+
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
     model = TorchGaussianMixture_v1(
         n_components=n_components,
@@ -141,6 +126,7 @@ def get_initialized_parameters(
         dtype=X.dtype,
     )
 
+    # Force only initialization, not EM progression
     params = model._initialize(X)
 
     return {
@@ -148,7 +134,6 @@ def get_initialized_parameters(
         "covariances": params.cov.clone(),
         "weights": params.weights.clone(),
         "precisions_cholesky": params.prec_chol.clone(),
-        "init_seed": seed,
     }
 
 def run_single_experiment(
@@ -160,16 +145,13 @@ def run_single_experiment(
     model_class,
     seed: int = 42,
     initial_params: Dict = None,
-    eval_idx: Optional[torch.Tensor] = None,
 ) -> Dict:
     """Run a single GMM fitting experiment and return results."""
 
-    # Seed deterministically for EVERY call (even when injecting params) to avoid
-    # accidental coupling via hidden randomness or order effects.
-    seed_all(seed)
-
-    # Safety rail: use random init when injecting params to avoid accidental kmeans
-    init_mode = "random" if initial_params is not None else "kmeans"
+    # Only set seeds if we're NOT injecting parameters (i.e., baseline debugging mode)
+    if initial_params is None:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
 
     # Instantiate model
     if model_class == TorchGaussianMixture_v1:
@@ -179,7 +161,7 @@ def run_single_experiment(
             max_iter=max_iter,
             tol=1e-6,
             n_init=1,
-            init_params=init_mode,
+            init_params="kmeans",
             device=X.device,
             dtype=X.dtype,
         )
@@ -190,7 +172,7 @@ def run_single_experiment(
             max_iter=max_iter,
             tol=1e-6,
             n_init=1,
-            init_params=init_mode,
+            init_params="kmeans",
             covariance_update_frequency=covariance_update_frequency,
             device=X.device,
             dtype=X.dtype,
@@ -214,29 +196,8 @@ def run_single_experiment(
         model.warm_start = True
         model.n_init = 1
 
-    # Safety: ensure injected parameters are present and not overwritten pre-fit
-    if initial_params is not None:
-        assert getattr(model, "_params", None) is not None, "Injected params missing before fit()"
-        # Strong sanity: means should match exactly after clone/inject
-        assert torch.allclose(
-            model._params.means, initial_params["means"], rtol=0.0, atol=0.0
-        ), "Injected means changed before fit()"
-
-    # Evaluate LL on a small, fixed subset for stability + speed on huge N
-    if eval_idx is None:
-        X_eval = X[: min(16384, X.shape[0])].contiguous()
-    else:
-        X_eval = X.index_select(0, eval_idx).contiguous()
-    initial_ll = model.score(X_eval).item() if initial_params is not None else float("nan")
-
-    # Warmup: do NOT warm up on full X (can dominate for huge N); use a small slice
-    warm_m = min(4096, X.shape[0])
-    if eval_idx is None:
-        X_warm = X[:warm_m].contiguous()
-    else:
-        X_warm = X.index_select(0, eval_idx[:warm_m]).contiguous()
-    _ = model.score(X_warm).item()
-    torch.cuda.synchronize()
+    # Calculate initial log-likelihood before fitting
+    initial_ll = model.score(X).item()
 
     # ---- Timing with CUDA events ----
     start = torch.cuda.Event(enable_timing=True)
@@ -254,10 +215,7 @@ def run_single_experiment(
 
     # Calculate final log-likelihood and delta
     final_ll = model.lower_bound_
-    # NOTE: lower_bound_ is full-data bound, initial_ll is subset score -> don't mix!
-    # Use subset-based final score too, so delta is meaningful.
-    final_ll_eval = model.score(X_eval).item() if initial_params is not None else float("nan")
-    delta_ll = final_ll_eval - initial_ll if initial_params is not None else float("nan")
+    delta_ll = final_ll - initial_ll
 
     return {
         "model": model,
@@ -266,7 +224,6 @@ def run_single_experiment(
         "em_iterations": model.n_iter_,
         "converged": model.converged_,
         "initial_log_likelihood": initial_ll,
-        "final_log_likelihood_eval": final_ll_eval,
         "delta_log_likelihood": delta_ll,
         "runtime_ms": runtime,
         "covariance_updates": getattr(model, "covariance_updates_", model.n_iter_),
@@ -354,88 +311,60 @@ def benchmark_likelihood_progression(
         f"(target > {min_baseline_iterations})"
     )
     
-    n_runs = 10
-
-    # configs: freq = 1..10
+    # Get initialized parameters that will be shared across all configurations
+    print("\nGenerating initial parameters (using v1 _initialize only)...")
+    initial_params = get_initialized_parameters(
+        X, K, covariance_type, seed=selected_seed
+    )
+    print("  Initial parameters generated and will be used for all configurations.")
+    
+    # Test configurations: freq = 1..10
     configs = [("v1 (baseline)", TorchGaussianMixture_v1, 1)] + [
         (f"v2 (freq={freq})", TorchGaussianMixture_v2, freq)
         for freq in range(2, 11)
     ]
-
-    # Collect per-config per-run results
-    per_config_runs: Dict[str, List[Dict]] = {name: [] for (name, _, _) in configs}
-
-    for run_idx in range(n_runs):
-        run_seed = selected_seed + run_idx * 1000
-
-        # IMPORTANT: new init for this run, shared across all configs
-        init_params = get_initialized_parameters(
-            X, K, covariance_type, seed=run_seed
-        )
-
-        # Fixed eval subset indices for this run (stable across configs)
-        eval_m = min(16384, X.shape[0])
-        g = torch.Generator(device=X.device)
-        g.manual_seed(run_seed + 999)
-        eval_idx = torch.randperm(X.shape[0], device=X.device, generator=g)[:eval_m]
-
-        print(f"\n[Run {run_idx+1}/{n_runs}] init_seed={run_seed}")
-
-        # Randomize config order to avoid order effects, keep baseline first
-        rng = random.Random(run_seed + 12345)
-        baseline_cfg = configs[0]
-        v2_cfgs = configs[1:].copy()
-        rng.shuffle(v2_cfgs)
-        configs_run = [baseline_cfg] + v2_cfgs
-
-        for name, model_class, freq in configs_run:
-            # Derive a stable per-config seed so runs are reproducible but configs
-            # don't share identical hidden RNG streams.
-            cfg_seed = (run_seed * 1000003 + freq * 9176 + (0 if "v1" in name else 1337)) % (2**31 - 1)
-            result = run_single_experiment(
-                X=X,
-                n_components=K,
-                covariance_type=covariance_type,
-                max_iter=max_iter,
-                covariance_update_frequency=freq,
-                model_class=model_class,
-                seed=cfg_seed,
-                initial_params=init_params,    # <- run-specific init
-                eval_idx=eval_idx,
-            )
-            # store
-            per_config_runs[name].append(result)
-
-    # Aggregate per config
+    
+    n_runs = 10
     results = []
+    all_lower_bounds = {}
+    
     for name, model_class, freq in configs:
-        run_results = per_config_runs[name]
-
-        avg_em_iterations = np.mean([r["em_iterations"] for r in run_results])
-        std_em_iterations = np.std([r["em_iterations"] for r in run_results])
-
-        avg_cov_updates = np.mean([r["cov_updates"] for r in run_results])
-        std_cov_updates = np.std([r["cov_updates"] for r in run_results])
-
-        avg_initial_ll = np.mean([r["initial_log_likelihood"] for r in run_results])
-        std_initial_ll = np.std([r["initial_log_likelihood"] for r in run_results])
-
-        avg_delta_ll = np.mean([r["delta_log_likelihood"] for r in run_results])
-        std_delta_ll = np.std([r["delta_log_likelihood"] for r in run_results])
-
-        avg_runtime = np.mean([r["runtime_ms"] for r in run_results])
-        std_runtime = np.std([r["runtime_ms"] for r in run_results])
-
-        avg_converged = np.mean([r["converged"] for r in run_results])
-
-        print(f"\n{name} ({n_runs} runs)")
+        print(f"\nRunning: {name} ({n_runs} runs)")
+        
+        # Run multiple times and collect results
+        run_results = []
+        for run_idx in range(n_runs):
+            result = run_single_experiment(
+                X, K, covariance_type, max_iter, freq, model_class, 
+                seed=selected_seed + run_idx * 1000,  # Different seed per run
+                initial_params=initial_params
+            )
+            run_results.append(result)
+        
+        # Aggregate results across runs
+        avg_em_iterations = np.mean([r['em_iterations'] for r in run_results])
+        avg_cov_updates = np.mean([r['cov_updates'] for r in run_results])
+        avg_initial_ll = np.mean([r['initial_log_likelihood'] for r in run_results])
+        avg_delta_ll = np.mean([r['delta_log_likelihood'] for r in run_results])
+        avg_runtime = np.mean([r['runtime_ms'] for r in run_results])
+        avg_converged = np.mean([r['converged'] for r in run_results])
+        
+        std_em_iterations = np.std([r['em_iterations'] for r in run_results])
+        std_cov_updates = np.std([r['cov_updates'] for r in run_results])
+        std_initial_ll = np.std([r['initial_log_likelihood'] for r in run_results])
+        std_delta_ll = np.std([r['delta_log_likelihood'] for r in run_results])
+        std_runtime = np.std([r['runtime_ms'] for r in run_results])
+        
         print(f"  EM iterations: {avg_em_iterations:.2f} ± {std_em_iterations:.2f}")
-        print(f"  Converged rate: {avg_converged:.2f}")
-        print(f"  Initial LL: {avg_initial_ll:.6f} ± {std_initial_ll:.6f}")
-        print(f"  ΔLL: {avg_delta_ll:.6f} ± {std_delta_ll:.6f}")
+        print(f"  Converged: {avg_converged:.2f}")
+        print(f"  Initial log-likelihood: {avg_initial_ll:.4f} ± {std_initial_ll:.4f}")
+        print(f"  Delta log-likelihood: {avg_delta_ll:.4f} ± {std_delta_ll:.4f}")
         print(f"  Runtime: {avg_runtime:.2f} ± {std_runtime:.2f} ms")
-        print(f"  Cov updates: {avg_cov_updates:.2f} ± {std_cov_updates:.2f}")
-
+        print(f"  Covariance updates: {avg_cov_updates:.2f} ± {std_cov_updates:.2f}")
+        
+        # Store first run's lower bounds for plotting
+        all_lower_bounds[name] = run_results[0]['lower_bounds']
+        
         results.append({
             "Configuration": name,
             "Model": "v1" if model_class == TorchGaussianMixture_v1 else "v2",
@@ -445,7 +374,6 @@ def benchmark_likelihood_progression(
             "K": K,
             "Cov Type": covariance_type,
             "Selected Seed": selected_seed,
-            "Runs": n_runs,
             "em_iterations": avg_em_iterations,
             "em_iterations_std": std_em_iterations,
             "cov_updates": avg_cov_updates,
@@ -454,51 +382,135 @@ def benchmark_likelihood_progression(
             "Initial Log-Likelihood Std": std_initial_ll,
             "Delta Log-Likelihood": avg_delta_ll,
             "Delta Log-Likelihood Std": std_delta_ll,
-            "Converged Rate": avg_converged,
+            "Converged": avg_converged,
             "Runtime (ms)": avg_runtime,
             "Runtime (ms) Std": std_runtime,
-            "Runtime per Iteration (ms)": avg_runtime / max(avg_em_iterations, 1e-9),
+            "Runtime per Iteration (ms)": avg_runtime / avg_em_iterations,
         })
-
+    
     df = pd.DataFrame(results)
-
-    # Write long-format CSV with per-run data
-    rows = []
-    for run_idx in range(n_runs):
-        # Reconstruct realized order for this run (for logging)
-        run_seed = selected_seed + run_idx * 1000
-        rng = random.Random(run_seed + 12345)
-        baseline_cfg = configs[0]
-        v2_cfgs = configs[1:].copy()
-        rng.shuffle(v2_cfgs)
-        configs_run = [baseline_cfg] + v2_cfgs
-        realized_order = [cfg[0] for cfg in configs_run]
-        
-        # Baseline runtime for this run (for stable, per-run speedup)
-        baseline_rt = per_config_runs["v1 (baseline)"][run_idx]["runtime_ms"]
-        for name, _, freq in configs:
-            r = per_config_runs[name][run_idx]
-            rows.append({
-                "run_idx": run_idx,
-                "init_seed": selected_seed + run_idx * 1000,
-                "Configuration": name,
-                "freq": freq,
-                "cfg_seed": (run_seed * 1000003 + freq * 9176 + (0 if "v1" in name else 1337)) % (2**31 - 1),
-                "eval_m": min(16384, X.shape[0]),
-                "em_iterations": r["em_iterations"],
-                "cov_updates": r["cov_updates"],
-                "converged": r["converged"],
-                "runtime_ms": r["runtime_ms"],
-                "speedup_vs_v1": (baseline_rt / r["runtime_ms"]) if r["runtime_ms"] > 0 else float("inf"),
-                "initial_ll": r["initial_log_likelihood"],
-                "final_ll_eval": r["final_log_likelihood_eval"],
-                "final_ll": r["model"].lower_bound_,
-                "delta_ll": r["delta_log_likelihood"],
-                "eval_order": "|".join(realized_order),
-            })
-    pd.DataFrame(rows).to_csv(DATA_DIR / f"raw_runs_N{N}_D{D}_K{K}_{covariance_type}.csv", index=False)
-
+    
+    # Plot likelihood progression
+    plot_likelihood_curves(
+        all_lower_bounds,
+        title=f"Likelihood Progression (N={N}, D={D}, K={K}, cov={covariance_type})",
+        filename=f"likelihood_progression_N{N}_D{D}_K{K}_{covariance_type}.png"
+    )
+    
     return df
+
+
+def plot_likelihood_curves(
+    lower_bounds_dict: Dict[str, List[float]],
+    title: str = "Likelihood Progression",
+    filename: str = "likelihood_progression.png",
+) -> None:
+    """Plot likelihood curves for different configurations.
+    
+    Args:
+        lower_bounds_dict: Dictionary mapping config name to list of lower bounds
+        title: Plot title
+        filename: Output filename
+    """
+    plt.figure(figsize=(12, 6))
+    
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+    linestyles = ['-', '--', '-.', ':', (0, (5, 2, 1, 2))]
+    
+    for i, (name, lower_bounds) in enumerate(lower_bounds_dict.items()):
+        iterations = list(range(1, len(lower_bounds) + 1))
+        plt.plot(
+            iterations,
+            lower_bounds,
+            label=name,
+            color=colors[i % len(colors)],
+            linestyle=linestyles[i % len(linestyles)],
+            linewidth=2,
+            marker='o' if len(lower_bounds) < 30 else None,
+            markersize=4,
+            markevery=max(1, len(lower_bounds) // 20),
+        )
+    
+    plt.xlabel("EM Iteration", fontsize=12)
+    plt.ylabel("Log-Likelihood", fontsize=12)
+    plt.title(title, fontsize=14, fontweight='bold')
+    plt.legend(fontsize=10, loc='lower right')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    output_path = RESULTS_DIR / filename
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"\n  Plot saved to: {output_path}")
+    plt.close()
+
+
+def plot_convergence_comparison(df: pd.DataFrame, filename: str = "convergence_comparison.png") -> None:
+    """Plot comparison of iterations vs runtime for different configurations.
+    
+    Args:
+        df: Results DataFrame
+        filename: Output filename
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    
+    # Plot 1: Iterations to convergence
+    ax = axes[0]
+    configs = df['Configuration'].values
+    iterations = df['em_iterations'].values
+    colors_map = {
+        'v1 (baseline)': '#1f77b4',
+        'v2 (freq=2)': '#ff7f0e',
+        'v2 (freq=3)': '#2ca02c',
+        'v2 (freq=4)': '#d62728',
+        'v2 (freq=5)': '#9467bd',
+        'v2 (freq=6)': '#8c564b',
+        'v2 (freq=7)': '#e377c2',
+        'v2 (freq=8)': '#7f7f7f',
+        'v2 (freq=9)': '#bcbd22',
+        'v2 (freq=10)': '#17becf',
+    }
+    colors = [colors_map.get(c, '#888888') for c in configs]
+    
+    bars = ax.bar(range(len(configs)), iterations, color=colors, alpha=0.8)
+    ax.set_xlabel("Configuration", fontsize=11)
+    ax.set_ylabel("Iterations", fontsize=11)
+    ax.set_title("Iterations to Convergence", fontsize=12, fontweight='bold')
+    ax.set_xticks(range(len(configs)))
+    ax.set_xticklabels(configs, rotation=45, ha='right', fontsize=9)
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # Add value labels on bars with std dev
+    iterations_std = df['em_iterations_std'].values
+    for i, (bar, val, std) in enumerate(zip(bars, iterations, iterations_std)):
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width()/2., height,
+                f'{val:.1f}\u00b1{std:.1f}',
+                ha='center', va='bottom', fontsize=8)
+    
+    # Plot 2: Runtime comparison
+    ax = axes[1]
+    runtime = df['Runtime (ms)'].values
+    runtime_std = df['Runtime (ms) Std'].values
+    bars = ax.bar(range(len(configs)), runtime, color=colors, alpha=0.8)
+    ax.set_xlabel("Configuration", fontsize=11)
+    ax.set_ylabel("Runtime (ms)", fontsize=11)
+    ax.set_title("Total Runtime", fontsize=12, fontweight='bold')
+    ax.set_xticks(range(len(configs)))
+    ax.set_xticklabels(configs, rotation=45, ha='right', fontsize=9)
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # Add value labels on bars with std dev
+    for i, (bar, val, std) in enumerate(zip(bars, runtime, runtime_std)):
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width()/2., height,
+                f'{val:.1f}\u00b1{std:.1f}',
+                ha='center', va='bottom', fontsize=8)
+    
+    plt.tight_layout()
+    output_path = RESULTS_DIR / filename
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"  Plot saved to: {output_path}")
+    plt.close()
 
 
 def run_comprehensive_benchmark():
@@ -529,6 +541,12 @@ def run_comprehensive_benchmark():
             N=N, D=D, K=K, max_iter=max_iter, covariance_type=cov_type, seed=42+i
         )
         all_results.append(df)
+        
+        # Plot convergence comparison
+        plot_convergence_comparison(
+            df, 
+            filename=f"convergence_comparison_N{N}_D{D}_K{K}_{cov_type}.png"
+        )
         
         # Save CSV
         csv_path = DATA_DIR / f"results_N{N}_D{D}_K{K}_{cov_type}.csv"
@@ -573,3 +591,4 @@ if __name__ == "__main__":
     print("BENCHMARK COMPLETE")
     print("="*80)
     print(f"\nResults saved to: {DATA_DIR}")
+    print(f"Figures saved to: {RESULTS_DIR}")
