@@ -14,7 +14,6 @@ The goal is to understand how reducing covariance update frequency affects:
 
 import os
 import sys
-import time
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -57,7 +56,7 @@ def generate_synthetic_gmm_data(
     K: int = 5,
     seed: int = 42,
     device=None,
-    dtype=torch.float64,
+    dtype=torch.float32,
 ) -> torch.Tensor:
     """Generate synthetic data from a Gaussian mixture model.
     
@@ -201,16 +200,19 @@ def run_single_experiment(
         initial_ll = model.score(X).item()
         print(f"  Initial shared log-likelihood: {initial_ll:.6f}")
 
-    # ---- Timing ----
+    # ---- Timing with CUDA events ----
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+
     torch.cuda.synchronize()
-    start_time = time.perf_counter()
+    start.record()
 
     model.fit(X)
 
+    end.record()
     torch.cuda.synchronize()
-    end_time = time.perf_counter()
 
-    runtime = (end_time - start_time) * 1000  # ms
+    runtime = start.elapsed_time(end)  # Returns ms directly
 
     return {
         "model": model,
