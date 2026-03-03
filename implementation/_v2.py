@@ -212,7 +212,7 @@ def _estimate_log_gaussian_prob_tied_precchol(
     # y = diff @ P^T using einsum for all components at once
     # diff: (N,K,D), precisions_chol: (D,D)
     # y[n,k,:] = diff[n,k,:] @ P^T
-    y = torch.einsum('nkd,de->nke', diff, precisions_chol)    
+    y = torch.einsum('nkd,ed->nke', diff, precisions_chol)    
     mahal = torch.sum(y * y, dim=2)  # (N,K)
 
     return -0.5 * (D * math.log(2 * math.pi) + mahal) + log_det_term
@@ -742,7 +742,7 @@ class TorchGaussianMixture:
                 lower, log_resp = _expectation_step_precchol(X, p.means, p.prec_chol, p.weights, p.cov_type)
                 history.append(float(lower.item()))
 
-                update_covariance = ((it + 1) % cov_update_freq) == 0
+                update_covariance = (it % cov_update_freq) == 0
                 if update_covariance:
                     covariance_updates += 1
 
@@ -762,7 +762,7 @@ class TorchGaussianMixture:
                     p = GMMParams(
                         weights=weights,
                         means=means,
-                        cov=cov,
+                        cov=p.cov,
                         prec_chol=p.prec_chol,
                         cov_type=p.cov_type,
                     )
