@@ -51,7 +51,7 @@ def generate_synthetic_gmm_data(
     K: int = 5,
     seed: int = 42,
     device=None,
-    dtype=torch.float64,
+    dtype=torch.float32,
 ) -> torch.Tensor:
     """Generate synthetic data from a Gaussian mixture model.
     
@@ -173,7 +173,7 @@ def run_single_experiment(
             dtype=X.dtype,
         )
 
-    # 🔥 Proper shared initialization via _params injection
+    #  Proper shared initialization via _params injection
     if initial_params is not None:
         if model_class == TorchGaussianMixture_v1:
             from implementation._v1 import GMMParams
