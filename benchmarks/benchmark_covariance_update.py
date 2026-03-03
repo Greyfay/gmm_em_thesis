@@ -196,7 +196,7 @@ def benchmark_covariance_vs_n(
 
 
 def benchmark_covariance_vs_d(
-    N: int = 10000,
+    N: int = 5000,
     K: int = 5,
     D_values: list = None,
     device: str = "cuda",
@@ -369,12 +369,12 @@ def run_all_benchmarks():
         df_n.to_csv(csv_path, index=False)
         print(f"Results saved to: {csv_path}")
     
-    # Benchmark 2: vs D (fixed N=10000, K=5)
+    # Benchmark 2: vs D (fixed N=5000, K=5)
     print("\n" + "=" * 80)
     print("PART 2: Covariance Update vs. D")
     print("=" * 80 + "\n")
     
-    N = 10000
+    N = 5000
     K = 5
     D_values = [3, 5, 10, 50, 100, 500]
     
