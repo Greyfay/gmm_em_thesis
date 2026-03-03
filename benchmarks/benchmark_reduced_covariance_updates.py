@@ -191,8 +191,21 @@ def run_single_experiment(
         model.warm_start = True
         model.n_init = 1
 
-    # Calculate initial log-likelihood before fitting
-    initial_ll = model.score(X).item()
+    # Warmup path:
+    # - If params are injected, model is ready and score() is safe/useful.
+    # - Otherwise, avoid score() and use a dummy GPU kernel warmup.
+    if initial_params is not None:
+        initial_ll = model.score(X).item()
+    else:
+        warmup_size = 256
+        warmup_a = torch.randn(
+            (warmup_size, warmup_size), device=X.device, dtype=X.dtype
+        )
+        warmup_b = torch.randn(
+            (warmup_size, warmup_size), device=X.device, dtype=X.dtype
+        )
+        _ = warmup_a @ warmup_b
+        initial_ll = np.nan
 
     # ---- Timing with CUDA events ----
     start = torch.cuda.Event(enable_timing=True)
@@ -210,7 +223,7 @@ def run_single_experiment(
 
     # Calculate final log-likelihood and delta
     final_ll = model.lower_bound_
-    delta_ll = final_ll - initial_ll
+    delta_ll = final_ll - initial_ll if not np.isnan(initial_ll) else np.nan
 
     return {
         "model": model,
