@@ -15,9 +15,8 @@ The goal is to understand how reducing covariance update frequency affects:
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, Tuple
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
@@ -29,10 +28,6 @@ sys.path.insert(0, ROOT)
 # Import implementations
 from implementation._v1 import TorchGaussianMixture as TorchGaussianMixture_v1
 from implementation._v2 import TorchGaussianMixture as TorchGaussianMixture_v2
-
-# Output directories
-RESULTS_DIR = Path("results/figures")
-RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 DATA_DIR = Path("results")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -326,7 +321,6 @@ def benchmark_likelihood_progression(
     
     n_runs = 10
     results = []
-    all_lower_bounds = {}
     
     for name, model_class, freq in configs:
         print(f"\nRunning: {name} ({n_runs} runs)")
@@ -362,9 +356,6 @@ def benchmark_likelihood_progression(
         print(f"  Runtime: {avg_runtime:.2f} ± {std_runtime:.2f} ms")
         print(f"  Covariance updates: {avg_cov_updates:.2f} ± {std_cov_updates:.2f}")
         
-        # Store first run's lower bounds for plotting
-        all_lower_bounds[name] = run_results[0]['lower_bounds']
-        
         results.append({
             "Configuration": name,
             "Model": "v1" if model_class == TorchGaussianMixture_v1 else "v2",
@@ -389,128 +380,7 @@ def benchmark_likelihood_progression(
         })
     
     df = pd.DataFrame(results)
-    
-    # Plot likelihood progression
-    plot_likelihood_curves(
-        all_lower_bounds,
-        title=f"Likelihood Progression (N={N}, D={D}, K={K}, cov={covariance_type})",
-        filename=f"likelihood_progression_N{N}_D{D}_K{K}_{covariance_type}.png"
-    )
-    
     return df
-
-
-def plot_likelihood_curves(
-    lower_bounds_dict: Dict[str, List[float]],
-    title: str = "Likelihood Progression",
-    filename: str = "likelihood_progression.png",
-) -> None:
-    """Plot likelihood curves for different configurations.
-    
-    Args:
-        lower_bounds_dict: Dictionary mapping config name to list of lower bounds
-        title: Plot title
-        filename: Output filename
-    """
-    plt.figure(figsize=(12, 6))
-    
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
-    linestyles = ['-', '--', '-.', ':', (0, (5, 2, 1, 2))]
-    
-    for i, (name, lower_bounds) in enumerate(lower_bounds_dict.items()):
-        iterations = list(range(1, len(lower_bounds) + 1))
-        plt.plot(
-            iterations,
-            lower_bounds,
-            label=name,
-            color=colors[i % len(colors)],
-            linestyle=linestyles[i % len(linestyles)],
-            linewidth=2,
-            marker='o' if len(lower_bounds) < 30 else None,
-            markersize=4,
-            markevery=max(1, len(lower_bounds) // 20),
-        )
-    
-    plt.xlabel("EM Iteration", fontsize=12)
-    plt.ylabel("Log-Likelihood", fontsize=12)
-    plt.title(title, fontsize=14, fontweight='bold')
-    plt.legend(fontsize=10, loc='lower right')
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    
-    output_path = RESULTS_DIR / filename
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"\n  Plot saved to: {output_path}")
-    plt.close()
-
-
-def plot_convergence_comparison(df: pd.DataFrame, filename: str = "convergence_comparison.png") -> None:
-    """Plot comparison of iterations vs runtime for different configurations.
-    
-    Args:
-        df: Results DataFrame
-        filename: Output filename
-    """
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    
-    # Plot 1: Iterations to convergence
-    ax = axes[0]
-    configs = df['Configuration'].values
-    iterations = df['em_iterations'].values
-    colors_map = {
-        'v1 (baseline)': '#1f77b4',
-        'v2 (freq=2)': '#ff7f0e',
-        'v2 (freq=3)': '#2ca02c',
-        'v2 (freq=4)': '#d62728',
-        'v2 (freq=5)': '#9467bd',
-        'v2 (freq=6)': '#8c564b',
-        'v2 (freq=7)': '#e377c2',
-        'v2 (freq=8)': '#7f7f7f',
-        'v2 (freq=9)': '#bcbd22',
-        'v2 (freq=10)': '#17becf',
-    }
-    colors = [colors_map.get(c, '#888888') for c in configs]
-    
-    bars = ax.bar(range(len(configs)), iterations, color=colors, alpha=0.8)
-    ax.set_xlabel("Configuration", fontsize=11)
-    ax.set_ylabel("Iterations", fontsize=11)
-    ax.set_title("Iterations to Convergence", fontsize=12, fontweight='bold')
-    ax.set_xticks(range(len(configs)))
-    ax.set_xticklabels(configs, rotation=45, ha='right', fontsize=9)
-    ax.grid(True, alpha=0.3, axis='y')
-    
-    # Add value labels on bars with std dev
-    iterations_std = df['em_iterations_std'].values
-    for i, (bar, val, std) in enumerate(zip(bars, iterations, iterations_std)):
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2., height,
-                f'{val:.1f}\u00b1{std:.1f}',
-                ha='center', va='bottom', fontsize=8)
-    
-    # Plot 2: Runtime comparison
-    ax = axes[1]
-    runtime = df['Runtime (ms)'].values
-    runtime_std = df['Runtime (ms) Std'].values
-    bars = ax.bar(range(len(configs)), runtime, color=colors, alpha=0.8)
-    ax.set_xlabel("Configuration", fontsize=11)
-    ax.set_ylabel("Runtime (ms)", fontsize=11)
-    ax.set_title("Total Runtime", fontsize=12, fontweight='bold')
-    ax.set_xticks(range(len(configs)))
-    ax.set_xticklabels(configs, rotation=45, ha='right', fontsize=9)
-    ax.grid(True, alpha=0.3, axis='y')
-    
-    # Add value labels on bars with std dev
-    for i, (bar, val, std) in enumerate(zip(bars, runtime, runtime_std)):
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2., height,
-                f'{val:.1f}\u00b1{std:.1f}',
-                ha='center', va='bottom', fontsize=8)
-    
-    plt.tight_layout()
-    output_path = RESULTS_DIR / filename
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"  Plot saved to: {output_path}")
-    plt.close()
 
 
 def run_comprehensive_benchmark():
@@ -541,12 +411,6 @@ def run_comprehensive_benchmark():
             N=N, D=D, K=K, max_iter=max_iter, covariance_type=cov_type, seed=42+i
         )
         all_results.append(df)
-        
-        # Plot convergence comparison
-        plot_convergence_comparison(
-            df, 
-            filename=f"convergence_comparison_N{N}_D{D}_K{K}_{cov_type}.png"
-        )
         
         # Save CSV
         csv_path = DATA_DIR / f"results_N{N}_D{D}_K{K}_{cov_type}.csv"
@@ -591,4 +455,3 @@ if __name__ == "__main__":
     print("BENCHMARK COMPLETE")
     print("="*80)
     print(f"\nResults saved to: {DATA_DIR}")
-    print(f"Figures saved to: {RESULTS_DIR}")
