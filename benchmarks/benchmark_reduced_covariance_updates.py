@@ -324,7 +324,7 @@ def run_comprehensive_benchmark():
     # Format: (N, D, K, cov_type, max_iter)
     moderate_N = 2000
     moderate_K = 5
-    d_values = [3, 5, 10, 50, 100, 500]
+    d_values = [3, 5, 10, 50, 100, 500, 1000]
     test_configs = [
         (moderate_N, D, moderate_K, "full", 1000)
         for D in d_values
