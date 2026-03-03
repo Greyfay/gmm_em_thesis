@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -67,27 +67,6 @@ def _nk_eps(dtype: torch.dtype) -> float:
 def _safe_log(x: torch.Tensor) -> torch.Tensor:
     tiny = torch.finfo(x.dtype).tiny
     return torch.log(x.clamp_min(tiny))
-
-
-def _params_preview(p: "GMMParams") -> Dict[str, Any]:
-    """Compact per-iteration parameter preview for debugging/benchmarking."""
-    k_head = min(3, p.weights.shape[0])
-    d_head = min(5, p.means.shape[1])
-
-    if p.cov_type == "full":
-        cov_diag_head = torch.diagonal(p.cov[0], dim1=-2, dim2=-1)[:d_head]
-    elif p.cov_type == "tied":
-        cov_diag_head = torch.diagonal(p.cov, dim1=-2, dim2=-1)[:d_head]
-    elif p.cov_type == "diag":
-        cov_diag_head = p.cov[0, :d_head]
-    else:  # spherical
-        cov_diag_head = p.cov[:1]
-
-    return {
-        "weights_head": [float(v) for v in p.weights[:k_head].detach().cpu().tolist()],
-        "mean0_head": [float(v) for v in p.means[0, :d_head].detach().cpu().tolist()],
-        "cov0_diag_head": [float(v) for v in cov_diag_head.detach().cpu().tolist()],
-    }
 
 
 def _add_reg_diag(cov: torch.Tensor, reg_covar: float) -> torch.Tensor:
@@ -530,7 +509,6 @@ class TorchGaussianMixture:
         self.n_iter_: int = 0
         self.lower_bound_: float = float("-inf")
         self.lower_bounds_: List[float] = []
-        self.param_trace_: List[Dict[str, Any]] = []
 
         self._params: Optional[GMMParams] = None
 
@@ -725,7 +703,6 @@ class TorchGaussianMixture:
         best_n_iter = 0
         best_converged = False
         best_history: List[float] = []
-        best_param_trace: List[Dict[str, Any]] = []
 
         n_init = 1 if (self.warm_start and self._params is not None) else self.n_init
 
@@ -736,7 +713,6 @@ class TorchGaussianMixture:
             final_lower = torch.tensor(float("-inf"), device=X.device, dtype=X.dtype)
             converged = False
             history: List[float] = []
-            param_trace: List[Dict[str, Any]] = []
 
             for it in range(self.max_iter):
                 lower, log_resp = _expectation_step_precchol(X, p.means, p.prec_chol, p.weights, p.cov_type)
@@ -753,9 +729,6 @@ class TorchGaussianMixture:
                     X, p.means, p.cov, p.weights, log_resp, p.cov_type, reg_covar=self.reg_covar
                 )
                 p = self._make_params(weights, means, cov)
-                iter_preview = _params_preview(p)
-                iter_preview["iter"] = it + 1
-                param_trace.append(iter_preview)
 
             if final_lower > best_lower:
                 best_lower = final_lower
@@ -763,7 +736,6 @@ class TorchGaussianMixture:
                 best_n_iter = it + 1
                 best_converged = converged
                 best_history = history
-                best_param_trace = param_trace
 
         assert best_params is not None
 
@@ -778,7 +750,6 @@ class TorchGaussianMixture:
 
         self.lower_bound_ = float(best_lower.item())
         self.lower_bounds_ = best_history
-        self.param_trace_ = best_param_trace
         self.n_iter_ = best_n_iter
         self.converged_ = best_converged
 
