@@ -372,15 +372,14 @@ def run_comprehensive_benchmark():
     
     all_results = []
     
-    # Test configurations: (N, D, K, cov_type, max_iter)
-    # Only testing full covariance type
+    # Test configurations: keep N and K constant, scale D
+    # Format: (N, D, K, cov_type, max_iter)
+    moderate_N = 2000
+    moderate_K = 5
+    d_values = [3, 5, 10, 50, 100, 500]
     test_configs = [
-        (1000, 5, 3, "full", 1000),
-        (2000, 10, 5, "full", 1000),
-        (2000, 20, 5, "full", 1000),
-        (3000, 15, 5, "full", 1000),
-        (1000000, 20, 5, "full", 1000),
-        (100000, 500, 5, "full", 1000),
+        (moderate_N, D, moderate_K, "full", 1000)
+        for D in d_values
     ]
     
     for i, (N, D, K, cov_type, max_iter) in enumerate(test_configs):
