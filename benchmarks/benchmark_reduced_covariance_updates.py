@@ -269,6 +269,7 @@ def benchmark_likelihood_progression(
     seed: int = 42,
     min_baseline_iterations: int = 10,
     max_seed_tries: int = 100,
+    print_first_10_points_per_run: bool = False,
 ) -> pd.DataFrame:
     """Benchmark likelihood progression for different covariance update frequencies.
     
@@ -324,6 +325,9 @@ def benchmark_likelihood_progression(
     
     for name, model_class, freq in configs:
         print(f"\nRunning: {name}")
+        if print_first_10_points_per_run:
+            print("  First 10 data points post initialization:")
+            print(X[:10].detach().cpu())
         result = run_single_experiment(
             X, K, covariance_type, max_iter, freq, model_class, seed=selected_seed,
             initial_params=initial_params
@@ -491,7 +495,13 @@ def run_comprehensive_benchmark():
         print(f"{'='*80}")
         
         df = benchmark_likelihood_progression(
-            N=N, D=D, K=K, max_iter=max_iter, covariance_type=cov_type, seed=42+i
+            N=N,
+            D=D,
+            K=K,
+            max_iter=max_iter,
+            covariance_type=cov_type,
+            seed=42+i,
+            print_first_10_points_per_run=(i == 3),
         )
         all_results.append(df)
         
