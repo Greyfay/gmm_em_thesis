@@ -56,7 +56,7 @@ def generate_synthetic_gmm_data(
     K: int = 5,
     seed: int = 42,
     device=None,
-    dtype=torch.float32,
+    dtype=torch.float64,
 ) -> torch.Tensor:
     """Generate synthetic data from a Gaussian mixture model.
     
