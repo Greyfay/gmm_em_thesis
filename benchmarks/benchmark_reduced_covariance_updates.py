@@ -103,6 +103,40 @@ def generate_synthetic_gmm_data(
     return X
 
 
+def get_initialized_parameters(
+    X: torch.Tensor,
+    n_components: int,
+    covariance_type: str,
+    seed: int = 42,
+) -> Dict:
+    """
+    Generate initialized parameters WITHOUT performing a full EM iteration.
+    """
+
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    model = TorchGaussianMixture_v1(
+        n_components=n_components,
+        covariance_type=covariance_type,
+        max_iter=1,
+        tol=1e-6,
+        n_init=1,
+        init_params="kmeans",
+        device=X.device,
+        dtype=X.dtype,
+    )
+
+    # Force only initialization, not EM progression
+    params = model._initialize(X)
+
+    return {
+        "means": params.means.clone(),
+        "covariances": params.cov.clone(),
+        "weights": params.weights.clone(),
+        "precisions_cholesky": params.prec_chol.clone(),
+    }
+
 def run_single_experiment(
     X: torch.Tensor,
     n_components: int,
@@ -111,37 +145,28 @@ def run_single_experiment(
     covariance_update_frequency: int,
     model_class,
     seed: int = 42,
+    initial_params: Dict = None,
 ) -> Dict:
-    """Run a single GMM fitting experiment and return results.
-    
-    Args:
-        X: Data
-        n_components: Number of components
-        covariance_type: Type of covariance
-        max_iter: Maximum iterations
-        covariance_update_frequency: How often to update covariance
-        model_class: TorchGaussianMixture class (_v1 or _v2)
-        seed: Random seed
-    
-    Returns:
-        Dictionary with results
-    """
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    
-    # Create model
+    """Run a single GMM fitting experiment and return results."""
+
+    # Only set seed if we're not injecting parameters
+    if initial_params is None:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+
+    # Instantiate model
     if model_class == TorchGaussianMixture_v1:
         model = model_class(
             n_components=n_components,
             covariance_type=covariance_type,
             max_iter=max_iter,
-            tol=1e-6,  # Lower tolerance to see more iterations
+            tol=1e-6,
             n_init=1,
             init_params="kmeans",
             device=X.device,
             dtype=X.dtype,
         )
-    else:  # _v2
+    else:
         model = model_class(
             n_components=n_components,
             covariance_type=covariance_type,
@@ -153,19 +178,40 @@ def run_single_experiment(
             device=X.device,
             dtype=X.dtype,
         )
-    
-    # Time the fitting
+
+    # 🔥 Proper shared initialization via _params injection
+    if initial_params is not None:
+        if model_class == TorchGaussianMixture_v1:
+            from implementation._v1 import GMMParams
+        else:
+            from implementation._v2 import GMMParams
+
+        model._params = GMMParams(
+            weights=initial_params["weights"].clone(),
+            means=initial_params["means"].clone(),
+            cov=initial_params["covariances"].clone(),
+            prec_chol=initial_params["precisions_cholesky"].clone(),
+            cov_type=covariance_type,
+        )
+
+        model.warm_start = True
+        model.n_init = 1
+
+        # Optional sanity check (can remove after validation)
+        initial_ll = model.score(X).item()
+        print(f"  Initial shared log-likelihood: {initial_ll:.6f}")
+
+    # ---- Timing ----
     torch.cuda.synchronize()
-    
     start_time = time.perf_counter()
+
     model.fit(X)
-    
+
     torch.cuda.synchronize()
-    
     end_time = time.perf_counter()
-    
-    runtime = (end_time - start_time) * 1000  # Convert to ms
-    
+
+    runtime = (end_time - start_time) * 1000  # ms
+
     return {
         "model": model,
         "lower_bounds": model.lower_bounds_,
@@ -175,7 +221,6 @@ def run_single_experiment(
         "runtime_ms": runtime,
         "covariance_updates": getattr(model, "covariance_updates_", model.n_iter_),
     }
-
 
 def find_challenging_seed_and_data(
     N: int,
@@ -258,6 +303,13 @@ def benchmark_likelihood_progression(
         f"(target > {min_baseline_iterations})"
     )
     
+    # Get initialized parameters that will be shared across all configurations
+    print("\nGenerating initial parameters (using v1 _initialize only)...")
+    initial_params = get_initialized_parameters(
+        X, K, covariance_type, seed=selected_seed
+    )
+    print("  Initial parameters generated and will be used for all configurations.")
+    
     # Test configurations
     configs = [
         ("v1 (baseline)", TorchGaussianMixture_v1, 1),
@@ -273,7 +325,8 @@ def benchmark_likelihood_progression(
     for name, model_class, freq in configs:
         print(f"\nRunning: {name}")
         result = run_single_experiment(
-            X, K, covariance_type, max_iter, freq, model_class, seed=selected_seed
+            X, K, covariance_type, max_iter, freq, model_class, seed=selected_seed,
+            initial_params=initial_params
         )
         
         print(f"  Iterations: {result['n_iter']}")
