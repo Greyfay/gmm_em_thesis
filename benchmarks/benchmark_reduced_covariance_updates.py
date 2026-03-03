@@ -143,7 +143,7 @@ def run_single_experiment(
 ) -> Dict:
     """Run a single GMM fitting experiment and return results."""
 
-    # Only set seeds if we're NOT injecting parameters (i.e., baseline debugging mode)
+    # Only set seed if we're not injecting parameters
     if initial_params is None:
         torch.manual_seed(seed)
         np.random.seed(seed)
@@ -191,21 +191,9 @@ def run_single_experiment(
         model.warm_start = True
         model.n_init = 1
 
-    # Warmup path:
-    # - If params are injected, model is ready and score() is safe/useful.
-    # - Otherwise, avoid score() and use a dummy GPU kernel warmup.
-    if initial_params is not None:
+        # Optional sanity check (can remove after validation)
         initial_ll = model.score(X).item()
-    else:
-        warmup_size = 256
-        warmup_a = torch.randn(
-            (warmup_size, warmup_size), device=X.device, dtype=X.dtype
-        )
-        warmup_b = torch.randn(
-            (warmup_size, warmup_size), device=X.device, dtype=X.dtype
-        )
-        _ = warmup_a @ warmup_b
-        initial_ll = np.nan
+        print(f"  Initial shared log-likelihood: {initial_ll:.6f}")
 
     # ---- Timing with CUDA events ----
     start = torch.cuda.Event(enable_timing=True)
@@ -221,18 +209,11 @@ def run_single_experiment(
 
     runtime = start.elapsed_time(end)  # Returns ms directly
 
-    # Calculate final log-likelihood and delta
-    final_ll = model.lower_bound_
-    delta_ll = final_ll - initial_ll if not np.isnan(initial_ll) else np.nan
-
     return {
-        "model": model,
-        "lower_bounds": model.lower_bounds_,
         "n_iter": model.n_iter_,
         "em_iterations": model.n_iter_,
         "converged": model.converged_,
-        "initial_log_likelihood": initial_ll,
-        "delta_log_likelihood": delta_ll,
+        "final_lower_bound": model.lower_bound_,
         "runtime_ms": runtime,
         "covariance_updates": getattr(model, "covariance_updates_", model.n_iter_),
         "cov_updates": getattr(model, "covariance_updates_", model.n_iter_),
@@ -332,42 +313,20 @@ def benchmark_likelihood_progression(
         for freq in range(2, 11)
     ]
     
-    n_runs = 10
     results = []
     
     for name, model_class, freq in configs:
-        print(f"\nRunning: {name} ({n_runs} runs)")
+        print(f"\nRunning: {name}")
+        result = run_single_experiment(
+            X, K, covariance_type, max_iter, freq, model_class, seed=selected_seed,
+            initial_params=initial_params
+        )
         
-        # Run multiple times and collect results
-        run_results = []
-        for run_idx in range(n_runs):
-            result = run_single_experiment(
-                X, K, covariance_type, max_iter, freq, model_class, 
-                seed=selected_seed + run_idx * 1000,  # Different seed per run
-                initial_params=initial_params
-            )
-            run_results.append(result)
-        
-        # Aggregate results across runs
-        avg_em_iterations = np.mean([r['em_iterations'] for r in run_results])
-        avg_cov_updates = np.mean([r['cov_updates'] for r in run_results])
-        avg_initial_ll = np.mean([r['initial_log_likelihood'] for r in run_results])
-        avg_delta_ll = np.mean([r['delta_log_likelihood'] for r in run_results])
-        avg_runtime = np.mean([r['runtime_ms'] for r in run_results])
-        avg_converged = np.mean([r['converged'] for r in run_results])
-        
-        std_em_iterations = np.std([r['em_iterations'] for r in run_results])
-        std_cov_updates = np.std([r['cov_updates'] for r in run_results])
-        std_initial_ll = np.std([r['initial_log_likelihood'] for r in run_results])
-        std_delta_ll = np.std([r['delta_log_likelihood'] for r in run_results])
-        std_runtime = np.std([r['runtime_ms'] for r in run_results])
-        
-        print(f"  EM iterations: {avg_em_iterations:.2f} ± {std_em_iterations:.2f}")
-        print(f"  Converged: {avg_converged:.2f}")
-        print(f"  Initial log-likelihood: {avg_initial_ll:.4f} ± {std_initial_ll:.4f}")
-        print(f"  Delta log-likelihood: {avg_delta_ll:.4f} ± {std_delta_ll:.4f}")
-        print(f"  Runtime: {avg_runtime:.2f} ± {std_runtime:.2f} ms")
-        print(f"  Covariance updates: {avg_cov_updates:.2f} ± {std_cov_updates:.2f}")
+        print(f"  EM iterations: {result['em_iterations']}")
+        print(f"  Converged: {result['converged']}")
+        print(f"  Final log-likelihood: {result['final_lower_bound']:.4f}")
+        print(f"  Runtime: {result['runtime_ms']:.2f} ms")
+        print(f"  Covariance updates: {result['cov_updates']}/{result['em_iterations']}")
         
         results.append({
             "Configuration": name,
@@ -378,21 +337,18 @@ def benchmark_likelihood_progression(
             "K": K,
             "Cov Type": covariance_type,
             "Selected Seed": selected_seed,
-            "em_iterations": avg_em_iterations,
-            "em_iterations_std": std_em_iterations,
-            "cov_updates": avg_cov_updates,
-            "cov_updates_std": std_cov_updates,
-            "Initial Log-Likelihood": avg_initial_ll,
-            "Initial Log-Likelihood Std": std_initial_ll,
-            "Delta Log-Likelihood": avg_delta_ll,
-            "Delta Log-Likelihood Std": std_delta_ll,
-            "Converged": avg_converged,
-            "Runtime (ms)": avg_runtime,
-            "Runtime (ms) Std": std_runtime,
-            "Runtime per Iteration (ms)": avg_runtime / avg_em_iterations,
+            "em_iterations": result['em_iterations'],
+            "cov_updates": result['cov_updates'],
+            "Iterations": result['n_iter'],
+            "Converged": result['converged'],
+            "Final Log-Likelihood": result['final_lower_bound'],
+            "Runtime (ms)": result['runtime_ms'],
+            "Covariance Updates": result['covariance_updates'],
+            "Runtime per Iteration (ms)": result['runtime_ms'] / result['n_iter'],
         })
     
     df = pd.DataFrame(results)
+    
     return df
 
 
@@ -444,8 +400,7 @@ def run_comprehensive_benchmark():
     print(combined_df.groupby('Configuration').agg({
         'em_iterations': 'mean',
         'Runtime (ms)': 'mean',
-        'Initial Log-Likelihood': 'mean',
-        'Delta Log-Likelihood': 'mean',
+        'Final Log-Likelihood': 'mean',
         'cov_updates': 'mean',
     }).round(2))
     print("="*80 + "\n")
