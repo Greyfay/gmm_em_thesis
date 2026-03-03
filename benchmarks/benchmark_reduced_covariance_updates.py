@@ -3,7 +3,7 @@
 
 This script compares the likelihood per iteration between:
 - _v1.py: Standard EM (covariance updated every iteration)
-- _v2.py: Reduced-frequency covariance updates (frequency = 2, 5, 10, 20)
+- _v2.py: Reduced-frequency covariance updates (frequency = 2..10)
 
 The goal is to understand how reducing covariance update frequency affects:
 1. Convergence speed (iterations to converge)
@@ -312,13 +312,10 @@ def benchmark_likelihood_progression(
     )
     print("  Initial parameters generated and will be used for all configurations.")
     
-    # Test configurations
-    configs = [
-        ("v1 (baseline)", TorchGaussianMixture_v1, 1),
-        ("v2 (freq=2)", TorchGaussianMixture_v2, 2),
-        ("v2 (freq=5)", TorchGaussianMixture_v2, 5),
-        ("v2 (freq=10)", TorchGaussianMixture_v2, 10),
-        ("v2 (freq=20)", TorchGaussianMixture_v2, 20),
+    # Test configurations: freq = 1..10
+    configs = [("v1 (baseline)", TorchGaussianMixture_v1, 1)] + [
+        (f"v2 (freq={freq})", TorchGaussianMixture_v2, freq)
+        for freq in range(2, 11)
     ]
     
     results = []
@@ -427,9 +424,18 @@ def plot_convergence_comparison(df: pd.DataFrame, filename: str = "convergence_c
     ax = axes[0]
     configs = df['Configuration'].values
     iterations = df['Iterations'].values
-    colors_map = {'v1 (baseline)': '#1f77b4', 'v2 (freq=2)': '#ff7f0e', 
-                  'v2 (freq=5)': '#2ca02c', 'v2 (freq=10)': '#d62728', 
-                  'v2 (freq=20)': '#9467bd'}
+    colors_map = {
+        'v1 (baseline)': '#1f77b4',
+        'v2 (freq=2)': '#ff7f0e',
+        'v2 (freq=3)': '#2ca02c',
+        'v2 (freq=4)': '#d62728',
+        'v2 (freq=5)': '#9467bd',
+        'v2 (freq=6)': '#8c564b',
+        'v2 (freq=7)': '#e377c2',
+        'v2 (freq=8)': '#7f7f7f',
+        'v2 (freq=9)': '#bcbd22',
+        'v2 (freq=10)': '#17becf',
+    }
     colors = [colors_map.get(c, '#888888') for c in configs]
     
     bars = ax.bar(range(len(configs)), iterations, color=colors, alpha=0.8)
