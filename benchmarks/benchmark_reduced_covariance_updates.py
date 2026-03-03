@@ -224,6 +224,7 @@ def run_single_experiment(
         "n_iter": model.n_iter_,
         "em_iterations": model.n_iter_,
         "log_likelihoods": [float(v) for v in model.lower_bounds_],
+        "param_trace": getattr(model, "param_trace_", []),
         "converged": model.converged_,
         "final_lower_bound": model.lower_bound_,
         "runtime_ms": runtime,
@@ -339,7 +340,15 @@ def benchmark_likelihood_progression(
         print(f"  Final log-likelihood: {result['final_lower_bound']:.4f}")
         print(f"  Runtime: {result['runtime_ms']:.2f} ms")
         print(f"  Covariance updates: {result['cov_updates']}/{result['em_iterations']}")
-        print(f"  Per-iteration log-likelihoods: {result['log_likelihoods']}")
+        first_n = min(3, len(result["param_trace"]))
+        print(f"  First {first_n} iteration parameter snapshots:")
+        for snapshot in result["param_trace"][:first_n]:
+            print(
+                f"    iter={snapshot['iter']}: "
+                f"weights_head={snapshot['weights_head']}, "
+                f"mean0_head={snapshot['mean0_head']}, "
+                f"cov0_diag_head={snapshot['cov0_diag_head']}"
+            )
         
         results.append({
             "Configuration": name,
@@ -353,6 +362,7 @@ def benchmark_likelihood_progression(
             "em_iterations": result['em_iterations'],
             "cov_updates": result['cov_updates'],
             "log_likelihoods": result['log_likelihoods'],
+            "param_trace_first3": result['param_trace'][:3],
             "Iterations": result['n_iter'],
             "Converged": result['converged'],
             "Final Log-Likelihood": result['final_lower_bound'],
