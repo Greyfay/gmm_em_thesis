@@ -710,12 +710,14 @@ class TorchGaussianMixture:
             p = self._params if (self.warm_start and self._params is not None) else self._initialize(X)
 
             prev_lower = torch.tensor(float("-inf"), device=X.device, dtype=X.dtype)
+            final_lower = torch.tensor(float("-inf"), device=X.device, dtype=X.dtype)
             converged = False
             history: List[float] = []
 
             for it in range(self.max_iter):
                 lower, log_resp = _expectation_step_precchol(X, p.means, p.prec_chol, p.weights, p.cov_type)
                 history.append(float(lower.item()))
+                final_lower = lower
 
                 means, cov, weights = _maximization_step(
                     X, p.means, p.cov, p.weights, log_resp, p.cov_type, reg_covar=self.reg_covar
@@ -728,8 +730,8 @@ class TorchGaussianMixture:
                     break
                 prev_lower = lower
 
-            if prev_lower > best_lower:
-                best_lower = prev_lower
+            if final_lower > best_lower:
+                best_lower = final_lower
                 best_params = p
                 best_n_iter = it + 1
                 best_converged = converged
