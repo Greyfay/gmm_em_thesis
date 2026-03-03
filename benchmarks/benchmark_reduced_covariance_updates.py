@@ -223,6 +223,7 @@ def run_single_experiment(
     return {
         "n_iter": model.n_iter_,
         "em_iterations": model.n_iter_,
+        "log_likelihoods": [float(v) for v in model.lower_bounds_],
         "converged": model.converged_,
         "final_lower_bound": model.lower_bound_,
         "runtime_ms": runtime,
@@ -338,6 +339,7 @@ def benchmark_likelihood_progression(
         print(f"  Final log-likelihood: {result['final_lower_bound']:.4f}")
         print(f"  Runtime: {result['runtime_ms']:.2f} ms")
         print(f"  Covariance updates: {result['cov_updates']}/{result['em_iterations']}")
+        print(f"  Per-iteration log-likelihoods: {result['log_likelihoods']}")
         
         results.append({
             "Configuration": name,
@@ -350,6 +352,7 @@ def benchmark_likelihood_progression(
             "Selected Seed": selected_seed,
             "em_iterations": result['em_iterations'],
             "cov_updates": result['cov_updates'],
+            "log_likelihoods": result['log_likelihoods'],
             "Iterations": result['n_iter'],
             "Converged": result['converged'],
             "Final Log-Likelihood": result['final_lower_bound'],
@@ -407,12 +410,28 @@ def run_comprehensive_benchmark():
     # Print summary statistics
     print("\nSUMMARY STATISTICS:")
     print("="*80)
-    print(combined_df.groupby('Configuration').agg({
+    summary_df = combined_df.groupby('Configuration').agg({
         'em_iterations': 'mean',
         'Runtime (ms)': 'mean',
         'Final Log-Likelihood': 'mean',
         'cov_updates': 'mean',
-    }).round(2))
+    }).round(2)
+
+    def _config_order_key(name: str) -> int:
+        if name == "v1 (baseline)":
+            return 1
+        if "freq=" in name:
+            try:
+                return int(name.split("freq=")[1].rstrip(")"))
+            except ValueError:
+                pass
+        return 10**9
+
+    summary_df = summary_df.reindex(
+        sorted(summary_df.index, key=_config_order_key)
+    )
+
+    print(summary_df)
     print("="*80 + "\n")
     
     return combined_df
