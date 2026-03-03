@@ -719,16 +719,16 @@ class TorchGaussianMixture:
                 history.append(float(lower.item()))
                 final_lower = lower
 
-                means, cov, weights = _maximization_step(
-                    X, p.means, p.cov, p.weights, log_resp, p.cov_type, reg_covar=self.reg_covar
-                )
-                p = self._make_params(weights, means, cov)
-
                 change = lower - prev_lower
                 if torch.abs(change) < self.tol:
                     converged = True
                     break
                 prev_lower = lower
+
+                means, cov, weights = _maximization_step(
+                    X, p.means, p.cov, p.weights, log_resp, p.cov_type, reg_covar=self.reg_covar
+                )
+                p = self._make_params(weights, means, cov)
 
             if final_lower > best_lower:
                 best_lower = final_lower

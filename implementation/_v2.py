@@ -744,6 +744,12 @@ class TorchGaussianMixture:
                 history.append(float(lower.item()))
                 final_lower = lower
 
+                change = lower - prev_lower
+                if torch.abs(change) < self.tol:
+                    converged = True
+                    break
+                prev_lower = lower
+
                 update_covariance = (it % cov_update_freq) == 0
                 if update_covariance:
                     covariance_updates += 1
@@ -768,12 +774,6 @@ class TorchGaussianMixture:
                         prec_chol=p.prec_chol,
                         cov_type=p.cov_type,
                     )
-
-                change = lower - prev_lower
-                if torch.abs(change) < self.tol:
-                    converged = True
-                    break
-                prev_lower = lower
 
             if final_lower > best_lower:
                 best_lower = final_lower
