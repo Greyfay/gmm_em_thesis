@@ -212,7 +212,7 @@ def benchmark_covariance_vs_d(
         n_runs: Number of timing runs per configuration
     """
     if D_values is None:
-        D_values = [10, 100, 1000]
+        D_values = [3, 5, 10, 50, 100, 500]
     
     print("=" * 80)
     print(f"BENCHMARK: Covariance Update Runtime vs. D (Full Covariance)")
@@ -376,7 +376,7 @@ def run_all_benchmarks():
     
     N = 10000
     K = 5
-    D_values = [10, 100, 1000]
+    D_values = [3, 5, 10, 50, 100, 500]
     
     df_d = benchmark_covariance_vs_d(
         N=N,
