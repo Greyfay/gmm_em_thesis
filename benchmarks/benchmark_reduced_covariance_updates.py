@@ -216,10 +216,12 @@ def run_single_experiment(
         "model": model,
         "lower_bounds": model.lower_bounds_,
         "n_iter": model.n_iter_,
+        "em_iterations": model.n_iter_,
         "converged": model.converged_,
         "final_lower_bound": model.lower_bound_,
         "runtime_ms": runtime,
         "covariance_updates": getattr(model, "covariance_updates_", model.n_iter_),
+        "cov_updates": getattr(model, "covariance_updates_", model.n_iter_),
     }
 
 def find_challenging_seed_and_data(
@@ -264,12 +266,11 @@ def benchmark_likelihood_progression(
     N: int = 2000,
     D: int = 10,
     K: int = 5,
-    max_iter: int = 100,
+    max_iter: int = 200,
     covariance_type: str = "full",
     seed: int = 42,
     min_baseline_iterations: int = 10,
     max_seed_tries: int = 100,
-    print_first_10_points_per_run: bool = False,
 ) -> pd.DataFrame:
     """Benchmark likelihood progression for different covariance update frequencies.
     
@@ -325,19 +326,16 @@ def benchmark_likelihood_progression(
     
     for name, model_class, freq in configs:
         print(f"\nRunning: {name}")
-        if print_first_10_points_per_run:
-            print("  First 10 data points post initialization:")
-            print(X[:10].detach().cpu())
         result = run_single_experiment(
             X, K, covariance_type, max_iter, freq, model_class, seed=selected_seed,
             initial_params=initial_params
         )
         
-        print(f"  Iterations: {result['n_iter']}")
+        print(f"  EM iterations: {result['em_iterations']}")
         print(f"  Converged: {result['converged']}")
         print(f"  Final log-likelihood: {result['final_lower_bound']:.4f}")
         print(f"  Runtime: {result['runtime_ms']:.2f} ms")
-        print(f"  Covariance updates: {result['covariance_updates']}/{result['n_iter']}")
+        print(f"  Covariance updates: {result['cov_updates']}/{result['em_iterations']}")
         
         all_lower_bounds[name] = result['lower_bounds']
         
@@ -350,6 +348,8 @@ def benchmark_likelihood_progression(
             "K": K,
             "Cov Type": covariance_type,
             "Selected Seed": selected_seed,
+            "em_iterations": result['em_iterations'],
+            "cov_updates": result['cov_updates'],
             "Iterations": result['n_iter'],
             "Converged": result['converged'],
             "Final Log-Likelihood": result['final_lower_bound'],
@@ -483,10 +483,10 @@ def run_comprehensive_benchmark():
     # Test configurations: (N, D, K, cov_type, max_iter)
     # Only testing full covariance type
     test_configs = [
-        (1000, 5, 3, "full", 100),
-        (2000, 10, 5, "full", 100),
-        (2000, 20, 5, "full", 100),
-        (3000, 15, 5, "full", 100),
+        (1000, 5, 3, "full", 200),
+        (2000, 10, 5, "full", 200),
+        (2000, 20, 5, "full", 200),
+        (3000, 15, 5, "full", 200),
     ]
     
     for i, (N, D, K, cov_type, max_iter) in enumerate(test_configs):
@@ -495,13 +495,7 @@ def run_comprehensive_benchmark():
         print(f"{'='*80}")
         
         df = benchmark_likelihood_progression(
-            N=N,
-            D=D,
-            K=K,
-            max_iter=max_iter,
-            covariance_type=cov_type,
-            seed=42+i,
-            print_first_10_points_per_run=(i == 3),
+            N=N, D=D, K=K, max_iter=max_iter, covariance_type=cov_type, seed=42+i
         )
         all_results.append(df)
         
@@ -528,10 +522,10 @@ def run_comprehensive_benchmark():
     print("\nSUMMARY STATISTICS:")
     print("="*80)
     print(combined_df.groupby('Configuration').agg({
-        'Iterations': 'mean',
+        'em_iterations': 'mean',
         'Runtime (ms)': 'mean',
         'Final Log-Likelihood': 'mean',
-        'Covariance Updates': 'mean',
+        'cov_updates': 'mean',
     }).round(2))
     print("="*80 + "\n")
     
