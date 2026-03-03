@@ -177,6 +177,44 @@ def run_single_experiment(
     }
 
 
+def find_challenging_seed_and_data(
+    N: int,
+    D: int,
+    K: int,
+    covariance_type: str,
+    max_iter: int,
+    base_seed: int,
+    min_baseline_iterations: int = 10,
+    max_seed_tries: int = 100,
+) -> Tuple[torch.Tensor, int, Dict]:
+    """Find a seed/data where baseline v1 requires enough EM iterations.
+
+    Returns:
+        X_selected, selected_seed, baseline_result
+    """
+    for offset in range(max_seed_tries):
+        candidate_seed = base_seed + offset
+        X = generate_synthetic_gmm_data(N, D, K, seed=candidate_seed)
+
+        baseline_result = run_single_experiment(
+            X=X,
+            n_components=K,
+            covariance_type=covariance_type,
+            max_iter=max_iter,
+            covariance_update_frequency=1,
+            model_class=TorchGaussianMixture_v1,
+            seed=candidate_seed,
+        )
+
+        if baseline_result["n_iter"] > min_baseline_iterations:
+            return X, candidate_seed, baseline_result
+
+    raise RuntimeError(
+        f"Could not find a seed with baseline iterations > {min_baseline_iterations} "
+        f"after {max_seed_tries} tries (starting from seed={base_seed})."
+    )
+
+
 def benchmark_likelihood_progression(
     N: int = 2000,
     D: int = 10,
@@ -184,6 +222,8 @@ def benchmark_likelihood_progression(
     max_iter: int = 100,
     covariance_type: str = "full",
     seed: int = 42,
+    min_baseline_iterations: int = 10,
+    max_seed_tries: int = 100,
 ) -> pd.DataFrame:
     """Benchmark likelihood progression for different covariance update frequencies.
     
@@ -202,8 +242,21 @@ def benchmark_likelihood_progression(
     print(f"BENCHMARK: Likelihood Progression (N={N}, D={D}, K={K}, cov_type={covariance_type})")
     print("="*80)
     
-    # Generate data
-    X = generate_synthetic_gmm_data(N, D, K, seed=seed)
+    # Generate/select data where baseline v1 requires enough iterations
+    X, selected_seed, baseline_result = find_challenging_seed_and_data(
+        N=N,
+        D=D,
+        K=K,
+        covariance_type=covariance_type,
+        max_iter=max_iter,
+        base_seed=seed,
+        min_baseline_iterations=min_baseline_iterations,
+        max_seed_tries=max_seed_tries,
+    )
+    print(
+        f"Selected seed={selected_seed} with baseline iterations={baseline_result['n_iter']} "
+        f"(target > {min_baseline_iterations})"
+    )
     
     # Test configurations
     configs = [
@@ -220,7 +273,7 @@ def benchmark_likelihood_progression(
     for name, model_class, freq in configs:
         print(f"\nRunning: {name}")
         result = run_single_experiment(
-            X, K, covariance_type, max_iter, freq, model_class, seed=seed
+            X, K, covariance_type, max_iter, freq, model_class, seed=selected_seed
         )
         
         print(f"  Iterations: {result['n_iter']}")
@@ -239,6 +292,7 @@ def benchmark_likelihood_progression(
             "D": D,
             "K": K,
             "Cov Type": covariance_type,
+            "Selected Seed": selected_seed,
             "Iterations": result['n_iter'],
             "Converged": result['converged'],
             "Final Log-Likelihood": result['final_lower_bound'],
