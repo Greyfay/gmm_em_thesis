@@ -493,6 +493,8 @@ def run_comprehensive_benchmark():
         (2000, 10, 5, "full", 200),
         (2000, 20, 5, "full", 200),
         (3000, 15, 5, "full", 200),
+        (1000000, 20, 5, "full", 200),
+        (100000, 500, 5, "full", 200),
     ]
     
     for i, (N, D, K, cov_type, max_iter) in enumerate(test_configs):
