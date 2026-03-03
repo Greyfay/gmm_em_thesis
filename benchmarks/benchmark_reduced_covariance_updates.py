@@ -274,7 +274,7 @@ def benchmark_likelihood_progression(
     N: int = 2000,
     D: int = 10,
     K: int = 5,
-    max_iter: int = 200,
+    max_iter: int = 1000,
     covariance_type: str = "full",
     seed: int = 42,
     min_baseline_iterations: int = 10,
@@ -340,9 +340,9 @@ def benchmark_likelihood_progression(
         print(f"  Final log-likelihood: {result['final_lower_bound']:.4f}")
         print(f"  Runtime: {result['runtime_ms']:.2f} ms")
         print(f"  Covariance updates: {result['cov_updates']}/{result['em_iterations']}")
-        first_n = min(3, len(result["param_trace"]))
-        print(f"  First {first_n} iteration parameter snapshots:")
-        for snapshot in result["param_trace"][:first_n]:
+        last_n = min(3, len(result["param_trace"]))
+        print(f"  Last {last_n} iteration parameter snapshots:")
+        for snapshot in result["param_trace"][-last_n:]:
             print(
                 f"    iter={snapshot['iter']}: "
                 f"weights_head={snapshot['weights_head']}, "
@@ -362,7 +362,7 @@ def benchmark_likelihood_progression(
             "em_iterations": result['em_iterations'],
             "cov_updates": result['cov_updates'],
             "log_likelihoods": result['log_likelihoods'],
-            "param_trace_first3": result['param_trace'][:3],
+            "param_trace_last3": result['param_trace'][-3:],
             "Iterations": result['n_iter'],
             "Converged": result['converged'],
             "Final Log-Likelihood": result['final_lower_bound'],
@@ -386,12 +386,12 @@ def run_comprehensive_benchmark():
     # Test configurations: (N, D, K, cov_type, max_iter)
     # Only testing full covariance type
     test_configs = [
-        (1000, 5, 3, "full", 200),
-        (2000, 10, 5, "full", 200),
-        (2000, 20, 5, "full", 200),
-        (3000, 15, 5, "full", 200),
-        (1000000, 20, 5, "full", 200),
-        (100000, 500, 5, "full", 200),
+        (1000, 5, 3, "full", 1000),
+        (2000, 10, 5, "full", 1000),
+        (2000, 20, 5, "full", 1000),
+        (3000, 15, 5, "full", 1000),
+        (1000000, 20, 5, "full", 1000),
+        (100000, 500, 5, "full", 1000),
     ]
     
     for i, (N, D, K, cov_type, max_iter) in enumerate(test_configs):
