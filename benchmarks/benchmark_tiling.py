@@ -34,7 +34,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from implementation import _v1 as v1
-from implementation import _v2 as v2
+from implementati   on import _v2_tiling as v2
 
 
 # -----------------------
