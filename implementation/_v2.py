@@ -43,7 +43,6 @@ Notes:
 
 from __future__ import annotations
 
-import argparse
 import math
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -290,7 +289,6 @@ def _maximization_step(
     log_resp: torch.Tensor,
     cov_type: str,
     reg_covar: float = 1e-6,
-    update_covariance: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """M-step (sklearn-style) producing updated means/cov/weights."""
     _check_cov_type(cov_type)
@@ -305,9 +303,6 @@ def _maximization_step(
 
     new_weights = nk / nk.sum()
     new_means = (resp.T @ X) / nk.unsqueeze(1)  # (K,D)
-
-    if not update_covariance:
-        return new_means, cov, new_weights
 
     diff = X.unsqueeze(1) - new_means.unsqueeze(0)  # (N,K,D)
 
@@ -471,7 +466,6 @@ class TorchGaussianMixture:
         weights_init: Optional[torch.Tensor] = None,
         means_init: Optional[torch.Tensor] = None,
         precisions_init: Optional[torch.Tensor] = None,
-        covariance_update_frequency: int = 1,
     ) -> None:
         _check_cov_type(covariance_type)
         if n_components <= 0:
@@ -486,8 +480,6 @@ class TorchGaussianMixture:
             raise ValueError(
                 "init_params must be one of: 'kmeans', 'k-means++', 'random', 'random_from_data', 'scikit_random', 'scikit_kmeans'"
             )
-        if covariance_update_frequency <= 0:
-            raise ValueError("covariance_update_frequency must be a positive integer")
 
         self.n_components = n_components
         self.covariance_type = covariance_type
@@ -500,7 +492,6 @@ class TorchGaussianMixture:
         self.device = device
         self.dtype = dtype
         self.kmeans_iter = kmeans_iter
-        self.covariance_update_frequency = covariance_update_frequency
 
         # User init
         self.weights_init = weights_init
@@ -518,7 +509,6 @@ class TorchGaussianMixture:
         self.n_iter_: int = 0
         self.lower_bound_: float = float("-inf")
         self.lower_bounds_: List[float] = []
-        self.covariance_updates_: int = 0
 
         self._params: Optional[GMMParams] = None
 
@@ -704,138 +694,64 @@ class TorchGaussianMixture:
     # -----------------------
 
     @torch.no_grad()
-    def fit(
-        self,
-        X: torch.Tensor,
-        covariance_update_frequency: Optional[int] = None,
-        debug_covariance_updates: bool = False,
-        warm_iters: int = 0,
-        min_cov_updates: int = 0,
-    ) -> "TorchGaussianMixture":
-        """
-        Fit GMM with reduced-frequency covariance updates.
-
-        Convergence is checked EVERY iteration (like v1),
-        but covariance matrices are updated only according to
-        covariance_update_frequency.
-        """
-
+    def fit(self, X: torch.Tensor) -> "TorchGaussianMixture":
         X = self._to_device_dtype(X)
         N, D = X.shape
-
-        cov_update_freq = (
-            self.covariance_update_frequency
-            if covariance_update_frequency is None
-            else covariance_update_frequency
-        )
-
-        if cov_update_freq <= 0:
-            raise ValueError("covariance_update_frequency must be a positive integer")
-        if warm_iters < 0:
-            raise ValueError("warm_iters must be non-negative")
-        if min_cov_updates < 0:
-            raise ValueError("min_cov_updates must be non-negative")
 
         best_lower = torch.tensor(float("-inf"), device=X.device, dtype=X.dtype)
         best_params: Optional[GMMParams] = None
         best_n_iter = 0
         best_converged = False
         best_history: List[float] = []
-        best_covariance_updates = 0
 
         n_init = 1 if (self.warm_start and self._params is not None) else self.n_init
 
-        for init_idx in range(n_init):
-
+        for _ in range(n_init):
             p = self._params if (self.warm_start and self._params is not None) else self._initialize(X)
 
+            prev_lower = torch.tensor(float("-inf"), device=X.device, dtype=X.dtype)
             final_lower = torch.tensor(float("-inf"), device=X.device, dtype=X.dtype)
             converged = False
             history: List[float] = []
-            covariance_updates = 0
-
-            prev_lower = torch.tensor(float("-inf"), device=X.device, dtype=X.dtype)
 
             for it in range(self.max_iter):
-
-                # ---- E-step ----
-                lower, log_resp = _expectation_step_precchol(
-                    X, p.means, p.prec_chol, p.weights, p.cov_type
-                )
-
+                lower, log_resp = _expectation_step_precchol(X, p.means, p.prec_chol, p.weights, p.cov_type)
                 history.append(float(lower.item()))
                 final_lower = lower
 
-                # ---- Convergence check EVERY iteration ----
                 change = lower - prev_lower
-
-                if covariance_updates >= min_cov_updates and torch.abs(change) < self.tol:
+                if torch.abs(change) < self.tol:
                     converged = True
                     break
-
                 prev_lower = lower
 
-                # ---- Decide whether to update covariance ----
-                update_covariance = (it < warm_iters) or (it % cov_update_freq == 0)
-
-                # ---- M-step ----
                 means, cov, weights = _maximization_step(
-                    X,
-                    p.means,
-                    p.cov,
-                    p.weights,
-                    log_resp,
-                    p.cov_type,
-                    reg_covar=self.reg_covar,
-                    update_covariance=update_covariance,
+                    X, p.means, p.cov, p.weights, log_resp, p.cov_type, reg_covar=self.reg_covar
                 )
+                p = self._make_params(weights, means, cov)
 
-                # ---- Apply updates ----
-                if update_covariance:
-                    covariance_updates += 1
-                    p = self._make_params(weights, means, cov)
-                else:
-                    p = GMMParams(
-                        weights=weights,
-                        means=means,
-                        cov=p.cov,
-                        prec_chol=p.prec_chol,
-                        cov_type=p.cov_type,
-                    )
-
-            # Keep best run
             if final_lower > best_lower:
                 best_lower = final_lower
                 best_params = p
                 best_n_iter = it + 1
                 best_converged = converged
                 best_history = history
-                best_covariance_updates = covariance_updates
 
         assert best_params is not None
 
-        # ---- Save fitted attributes ----
+        # Save internal + sklearn-like attributes
         self._params = best_params
 
         self.weights_ = best_params.weights
         self.means_ = best_params.means
         self.covariances_ = best_params.cov
         self.precisions_cholesky_ = best_params.prec_chol
-        self.precisions_ = _compute_precisions(
-            best_params.prec_chol, best_params.cov_type
-        )
+        self.precisions_ = _compute_precisions(best_params.prec_chol, best_params.cov_type)
 
         self.lower_bound_ = float(best_lower.item())
         self.lower_bounds_ = best_history
         self.n_iter_ = best_n_iter
         self.converged_ = best_converged
-        self.covariance_updates_ = best_covariance_updates
-
-        if debug_covariance_updates:
-            print(
-                f"[DEBUG] cov updates: {self.covariance_updates_}/{self.n_iter_} "
-                f"(freq={cov_update_freq})"
-            )
 
         return self
 
@@ -943,35 +859,3 @@ class TorchGaussianMixture:
                     X_out[mask] = mvn.sample((n_k,))
 
         return X_out, labels
-
-
-def _parse_cli_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run TorchGaussianMixture with optional covariance update controls.")
-    parser.add_argument(
-        "covariance_update_frequency",
-        nargs="?",
-        type=int,
-        default=1,
-        help="Update covariance every N EM iterations (default: 1).",
-    )
-    parser.add_argument(
-        "--debug-covariance-updates",
-        action="store_true",
-        help="Print debug line with covariance/prec_chol update count.",
-    )
-    return parser.parse_args()
-
-
-if __name__ == "__main__":
-    args = _parse_cli_args()
-
-    torch.manual_seed(0)
-    X_demo = torch.randn(500, 2)
-
-    model = TorchGaussianMixture(
-        n_components=3,
-        covariance_type="diag",
-        max_iter=20,
-        covariance_update_frequency=args.covariance_update_frequency,
-    )
-    model.fit(X_demo, debug_covariance_updates=args.debug_covariance_updates)
