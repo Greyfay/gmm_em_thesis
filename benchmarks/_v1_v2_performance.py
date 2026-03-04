@@ -264,11 +264,11 @@ def test_v1_full_covariance() -> List[Dict[str, Any]]:
     cov_type = "full"
 
     test_configs = [
-        (500, 20, 5, 50),
-        (1000, 50, 10, 50),
-        (2000, 100, 20, 50),
-        # Stress config:
-        (1000, 256, 16, 30),
+        (1000, 32, 4, 50),
+        (1000, 64, 4, 50),
+        (1000, 128, 4, 50),
+        (1000, 256, 4, 50),
+        (1000, 512, 4, 50),
     ]
 
     for N, D, K, max_iter in test_configs:
@@ -345,13 +345,14 @@ def test_v2_tiling_sweep() -> List[Dict[str, Any]]:
     cov_type = "full"
 
     test_configs = [
-        (500, 20, 5, 50),
-        (1000, 50, 10, 50),
-        (2000, 100, 20, 50),
-        (1000, 256, 16, 30),
+        (1000, 32, 4, 50),
+        (1000, 64, 4, 50),
+        (1000, 128, 4, 50),
+        (1000, 256, 4, 50),
+        (1000, 512, 4, 50),
     ]
 
-    tiling_sizes = [16, 32, 64, 128, 256]
+    tiling_sizes = [4, 16, 32, 64, 128]
 
     for N, D, K, max_iter in test_configs:
         print(f"\n--- Config: N={N}, D={D}, K={K}, max_iter={max_iter} ---")
