@@ -491,6 +491,7 @@ class TorchGaussianMixture:
         weights_init: Optional[torch.Tensor] = None,
         means_init: Optional[torch.Tensor] = None,
         precisions_init: Optional[torch.Tensor] = None,
+        tiling_size: Optional[int] = None,
     ) -> None:
         _check_cov_type(covariance_type)
         if n_components <= 0:
@@ -505,6 +506,10 @@ class TorchGaussianMixture:
             raise ValueError(
                 "init_params must be one of: 'kmeans', 'k-means++', 'random', 'random_from_data', 'scikit_random', 'scikit_kmeans'"
             )
+        if tiling_size is None:
+            tiling_size = 64
+        if not isinstance(tiling_size, int) or tiling_size <= 0:
+            raise ValueError(f"tiling_size must be a positive integer, got {tiling_size!r}")
 
         self.n_components = n_components
         self.covariance_type = covariance_type
@@ -517,6 +522,7 @@ class TorchGaussianMixture:
         self.device = device
         self.dtype = dtype
         self.kmeans_iter = kmeans_iter
+        self.tiling_size = tiling_size
 
         # User init
         self.weights_init = weights_init
@@ -666,7 +672,12 @@ class TorchGaussianMixture:
         return GMMParams(weights=weights, means=means, cov=cov, prec_chol=prec_chol, cov_type=self.covariance_type)
 
     @torch.no_grad()
-    def _initialize_from_log_resp(self, X: torch.Tensor, log_resp: torch.Tensor) -> GMMParams:
+    def _initialize_from_log_resp(
+        self,
+        X: torch.Tensor,
+        log_resp: torch.Tensor,
+        tile_B: Optional[int] = None,
+    ) -> GMMParams:
         K = self.n_components
         N, D = X.shape
 
@@ -691,11 +702,12 @@ class TorchGaussianMixture:
             log_resp,
             self.covariance_type,
             reg_covar=self.reg_covar,
+            tile_B=tile_B,
         )
         return self._make_params(weights, means, cov)
 
     @torch.no_grad()
-    def _initialize(self, X: torch.Tensor) -> GMMParams:
+    def _initialize(self, X: torch.Tensor, tile_B: Optional[int] = None) -> GMMParams:
         X = self._to_device_dtype(X)
         N, D = X.shape
         K = self.n_components
@@ -741,7 +753,7 @@ class TorchGaussianMixture:
             resp = torch.rand((N, K), device=X.device, dtype=X.dtype)
             resp = resp / resp.sum(dim=1, keepdim=True)
             log_resp = _safe_log(resp)
-            return self._initialize_from_log_resp(X, log_resp)
+            return self._initialize_from_log_resp(X, log_resp, tile_B=tile_B)
 
         if self.init_params in ("kmeans", "k-means++"):
             centroids = _kmeans_plus_plus_init_centroids(X, K)
@@ -756,11 +768,11 @@ class TorchGaussianMixture:
             resp = torch.zeros((N, K), device=X.device, dtype=X.dtype)
             resp[torch.arange(N, device=X.device), labels] = 1.0
             log_resp = _safe_log(resp)
-            return self._initialize_from_log_resp(X, log_resp)
+            return self._initialize_from_log_resp(X, log_resp, tile_B=tile_B)
 
         if self.init_params in ("scikit_kmeans", "scikit_random"):
             log_resp = _initialize_from_sklearn(X, K, self.init_params)
-            return self._initialize_from_log_resp(X, log_resp)
+            return self._initialize_from_log_resp(X, log_resp, tile_B=tile_B)
 
         # random_from_data
         if self.init_params == "random_from_data":
@@ -789,9 +801,12 @@ class TorchGaussianMixture:
     # -----------------------
 
     @torch.no_grad()
-    def fit(self, X: torch.Tensor) -> "TorchGaussianMixture":
+    def fit(self, X: torch.Tensor, tiling_size: Optional[int] = None) -> "TorchGaussianMixture":
         X = self._to_device_dtype(X)
         N, D = X.shape
+        active_tiling_size = self.tiling_size if tiling_size is None else tiling_size
+        if not isinstance(active_tiling_size, int) or active_tiling_size <= 0:
+            raise ValueError(f"tiling_size must be a positive integer, got {active_tiling_size!r}")
 
         best_lower = torch.tensor(float("-inf"), device=X.device, dtype=X.dtype)
         best_params: Optional[GMMParams] = None
@@ -802,7 +817,11 @@ class TorchGaussianMixture:
         n_init = 1 if (self.warm_start and self._params is not None) else self.n_init
 
         for _ in range(n_init):
-            p = self._params if (self.warm_start and self._params is not None) else self._initialize(X)
+            p = (
+                self._params
+                if (self.warm_start and self._params is not None)
+                else self._initialize(X, tile_B=active_tiling_size)
+            )
 
             prev_lower = torch.tensor(float("-inf"), device=X.device, dtype=X.dtype)
             converged = False
@@ -813,7 +832,14 @@ class TorchGaussianMixture:
                 history.append(float(lower.item()))
 
                 means, cov, weights = _maximization_step(
-                    X, p.means, p.cov, p.weights, log_resp, p.cov_type, reg_covar=self.reg_covar
+                    X,
+                    p.means,
+                    p.cov,
+                    p.weights,
+                    log_resp,
+                    p.cov_type,
+                    reg_covar=self.reg_covar,
+                    tile_B=active_tiling_size,
                 )
                 p = self._make_params(weights, means, cov)
 
