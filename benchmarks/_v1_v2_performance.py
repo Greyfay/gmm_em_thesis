@@ -337,7 +337,7 @@ def test_v2_tiling_sweep() -> List[Dict[str, Any]]:
         (1000, 256, 16, 30),
     ]
 
-    tiling_sizes = [16, 32, 64, 128]
+    tiling_sizes = [16, 32, 64, 128, 256]
 
     for N, D, K, max_iter in test_configs:
         print(f"\n--- Config: N={N}, D={D}, K={K}, max_iter={max_iter} ---")
@@ -425,15 +425,49 @@ def main():
         df.to_csv(out, index=False)
         print(f"\n✓ Results saved to: {out}")
 
-        # Helpful on-screen summary
-        print("\n--- Quick summary: avg cov time by tiling size (v2) ---")
-        if not df[df["Implementation"] == "v2"].empty:
-            print(
-                df[df["Implementation"] == "v2"]
-                .groupby(["D", "K", "Tiling Size"])["Avg Cov Time (ms)"]
-                .mean()
-                .sort_index()
-            )
+        # Compute v1 baseline (avg cov time per call) by D
+        df_v1 = df[df["Implementation"] == "v1"]
+        v1_baseline = {}
+        for _, row in df_v1.iterrows():
+            D = row["D"]
+            avg_ms = row["Avg Cov Time (ms)"]
+            if D not in v1_baseline:
+                v1_baseline[D] = []
+            v1_baseline[D].append(avg_ms)
+        # Average multiple runs of same D
+        v1_baseline = {D: float(np.mean(times)) for D, times in v1_baseline.items()}
+
+        print("\n" + "=" * 80)
+        print("SUMMARY: Avg Covariance Time (ms) vs Tiling Size for each D")
+        print("=" * 80)
+
+        df_v2 = df[df["Implementation"] == "v2"]
+        for D in sorted(df_v2["D"].unique()):
+            df_d = df_v2[df_v2["D"] == D]
+            print(f"\nD={D}:")
+            print(f"  v1 baseline: {v1_baseline.get(D, np.nan):.3f} ms")
+            print(f"  \n  B (tiling_size) | Avg Cov Time (ms) | Ratio to v1")
+            print(f"  " + "-" * 50)
+            for _, row in df_d.sort_values("Tiling Size").iterrows():
+                B = int(row["Tiling Size"])
+                avg_ms = row["Avg Cov Time (ms)"]
+                ratio = avg_ms / v1_baseline.get(D, 1.0) if D in v1_baseline else np.nan
+                print(f"  {B:4d}             | {avg_ms:17.3f} | {ratio:7.3f}x")
+
+        print("\n" + "=" * 80)
+        print("SUMMARY: Ratio to v1 (lower is faster)")
+        print("=" * 80)
+        for D in sorted(v1_baseline.keys()):
+            df_d = df_v2[df_v2["D"] == D]
+            if len(df_d) > 0:
+                print(f"\nD={D}:")
+                for _, row in df_d.sort_values("Tiling Size").iterrows():
+                    B = int(row["Tiling Size"])
+                    avg_ms = row["Avg Cov Time (ms)"]
+                    ratio = avg_ms / v1_baseline.get(D, 1.0)
+                    speedup = "faster" if ratio < 1.0 else "slower"
+                    pct_diff = abs(ratio - 1.0) * 100
+                    print(f"  B={B:3d}: {ratio:.3f}x ({pct_diff:.1f}% {speedup})")
 
 
 if __name__ == "__main__":
