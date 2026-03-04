@@ -288,7 +288,10 @@ def _maximization_step(
     reg_covar: float = 1e-6,
     tile_B: Optional[int] = None,   # <-- v2 knob; used for full covariance
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """M-step (sklearn-style) producing updated means/cov/weights."""
+    """M-step (sklearn-style) producing updated means/cov/weights.
+
+    v2: full-covariance update uses feature tiling + upper-triangular tiling exploiting symmetry.
+    """
     _check_cov_type(cov_type)
     N, D = X.shape
     K, D2 = means.shape
@@ -296,7 +299,6 @@ def _maximization_step(
     assert log_resp.shape == (N, K)
 
     resp = log_resp.exp()  # (N,K)
-
     nk = resp.sum(dim=0) + _nk_eps(resp.dtype)  # (K,)
 
     new_weights = nk / nk.sum()
@@ -309,52 +311,60 @@ def _maximization_step(
 
     if cov_type == "diag":
         # Use E[X^2] - E[X]^2 formula to avoid materializing diff
-        avg_X2 = (resp.T @ (X * X)) / nk.unsqueeze(1)     # (K,D)
-        avg_means2 = new_means * new_means               # (K,D)
+        avg_X2 = (resp.T @ (X * X)) / nk.unsqueeze(1)   # (K,D)
+        avg_means2 = new_means * new_means              # (K,D)
         new_cov = (avg_X2 - avg_means2) + reg_covar      # (K,D)
 
     elif cov_type == "spherical":
         # Same formula as diag, then average across dimensions
-        avg_X2 = (resp.T @ (X * X)) / nk.unsqueeze(1)     # (K,D)
-        avg_means2 = new_means * new_means               # (K,D)
-        diag_cov = (avg_X2 - avg_means2) + reg_covar      # (K,D)
-        new_cov = diag_cov.mean(dim=1)                    # (K,)
+        avg_X2 = (resp.T @ (X * X)) / nk.unsqueeze(1)   # (K,D)
+        avg_means2 = new_means * new_means              # (K,D)
+        diag_cov = (avg_X2 - avg_means2) + reg_covar     # (K,D)
+        new_cov = diag_cov.mean(dim=1)                   # (K,)
 
     elif cov_type == "tied":
         # sum_k sum_n resp[n,k] * diff[n,k,:] * diff[n,k,:]^T
-        cov_sum = torch.einsum('nk,nkd,nke->de', resp, diff, diff)  # (D,D)
+        cov_sum = torch.einsum("nk,nkd,nke->de", resp, diff, diff)  # (D,D)
         new_cov = cov_sum / nk.sum()
         new_cov = new_cov + reg_covar * torch.eye(D, device=X.device, dtype=X.dtype)
 
     else:  # full
-        # v2-better: tiled covariance update without materializing diff (N,K,D)
+        # v2: tiled covariance update without materializing diff (N,K,D)
+        # + upper-triangular tiling (exploit symmetry): compute only j>=i blocks,
+        #   then mirror to fill lower triangle.
         B = int(tile_B) if tile_B is not None else 64
         if B <= 0:
             raise ValueError(f"tile_B must be positive, got {B}")
 
         cov_sum = torch.zeros((K, D, D), device=X.device, dtype=X.dtype)
-
-        # Precompute for normalization and reg
         nk_ = nk.unsqueeze(1).unsqueeze(2)  # (K,1,1)
         eye = torch.eye(D, device=X.device, dtype=X.dtype)
 
         # Tiling over feature dimensions
         for i in range(0, D, B):
             i2 = min(i + B, D)
+
             # diff_i: (N,K,Bi) = X[:, i:i2] - new_means[:, i:i2]
-            Xi = X[:, i:i2].unsqueeze(1)                 # (N,1,Bi)
-            Mi = new_means[:, i:i2].unsqueeze(0)         # (1,K,Bi)
-            diff_i = Xi - Mi                              # (N,K,Bi)
+            Xi = X[:, i:i2].unsqueeze(1)            # (N,1,Bi)
+            Mi = new_means[:, i:i2].unsqueeze(0)    # (1,K,Bi)
+            diff_i = Xi - Mi                         # (N,K,Bi)
 
-            for j in range(0, D, B):
+            # Upper-triangular: j starts at i
+            for j in range(i, D, B):
                 j2 = min(j + B, D)
-                Xj = X[:, j:j2].unsqueeze(1)             # (N,1,Bj)
-                Mj = new_means[:, j:j2].unsqueeze(0)     # (1,K,Bj)
-                diff_j = Xj - Mj                          # (N,K,Bj)
 
-                # cov_block: (K,Bi,Bj)
+                # diff_j: (N,K,Bj)
+                Xj = X[:, j:j2].unsqueeze(1)         # (N,1,Bj)
+                Mj = new_means[:, j:j2].unsqueeze(0) # (1,K,Bj)
+                diff_j = Xj - Mj                      # (N,K,Bj)
+
+                # cov_block: (K,Bi,Bj) where block corresponds to [i:i2, j:j2]
                 cov_block = torch.einsum("nk,nkb,nkc->kbc", resp, diff_i, diff_j)
+
                 cov_sum[:, i:i2, j:j2] = cov_block
+                if j != i:
+                    # Mirror into lower triangle: [j:j2, i:i2] = cov_block^T
+                    cov_sum[:, j:j2, i:i2] = cov_block.transpose(-1, -2)
 
         new_cov = cov_sum / nk_
         new_cov = new_cov + reg_covar * eye.unsqueeze(0)
