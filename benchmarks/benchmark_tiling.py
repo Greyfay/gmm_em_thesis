@@ -162,14 +162,11 @@ def make_cov_timer_v1() -> Tuple[Dict[str, float], Any]:
 def make_cov_timer_v2() -> Tuple[Dict[str, float], Any]:
     """
     Monkeypatch v2._maximization_step so we can accumulate covariance-only time
-    for the tiled + upper-triangular full-cov path (respects tile_B).
+    for the N-chunked batched-GEMM full-cov path (respects tile_B as chunk_N).
 
-    This matches your current v2 covariance branch:
-
-      - tile over i blocks
-      - for each i block, iterate j from i..D (upper triangle)
-      - write cov_block into [i,j]
-      - if j != i, mirror transpose into [j,i]
+    This matches the v2 covariance branch exactly:
+      - stream over N in chunks of size tile_B
+      - for each chunk: A = sqrt(resp) * diff, then cov_sum += A^T @ A via bmm
     """
     original = v2._maximization_step
     stats: Dict[str, float] = {"cov_time_s": 0.0, "count": 0.0}
@@ -197,41 +194,29 @@ def make_cov_timer_v2() -> Tuple[Dict[str, float], Any]:
         new_weights = nk / nk.sum()
         new_means = (resp.T @ X) / nk.unsqueeze(1)
 
-        # Time ONLY the tiled covariance update (CUDA accurate)
-        B = int(tile_B) if tile_B is not None else 64
-        if B <= 0:
-            raise ValueError(f"tile_B must be positive, got {B}")
-
+        N, D = X.shape
         K = new_means.shape[0]
-        D = X.shape[1]
+        chunk_N = int(tile_B) if tile_B is not None else 1024
+        if chunk_N <= 0:
+            raise ValueError(f"tile_B (used as chunk_N) must be positive, got {chunk_N}")
 
         _cuda_sync_if_needed(X)
         t0 = time.perf_counter()
 
+        # N-chunked batched GEMM: cov_sum[k] = sum_chunks A_k^T @ A_k
+        # where A_k[n,:] = sqrt(resp[n,k]) * (X[n,:] - mean[k,:])
         cov_sum = torch.zeros((K, D, D), device=X.device, dtype=X.dtype)
         nk_ = nk.unsqueeze(1).unsqueeze(2)  # (K,1,1)
         eye = torch.eye(D, device=X.device, dtype=X.dtype)
 
-        # Tiling over feature dimensions (upper-triangular blocks)
-        for i in range(0, D, B):
-            i2 = min(i + B, D)
-
-            Xi = X[:, i:i2].unsqueeze(1)           # (N,1,Bi)
-            Mi = new_means[:, i:i2].unsqueeze(0)   # (1,K,Bi)
-            diff_i = Xi - Mi                        # (N,K,Bi)
-
-            for j in range(i, D, B):
-                j2 = min(j + B, D)
-
-                Xj = X[:, j:j2].unsqueeze(1)        # (N,1,Bj)
-                Mj = new_means[:, j:j2].unsqueeze(0)# (1,K,Bj)
-                diff_j = Xj - Mj                     # (N,K,Bj)
-
-                cov_block = torch.einsum("nk,nkb,nkc->kbc", resp, diff_i, diff_j)
-
-                cov_sum[:, i:i2, j:j2] = cov_block
-                if j != i:
-                    cov_sum[:, j:j2, i:i2] = cov_block.transpose(-1, -2)
+        for n0 in range(0, N, chunk_N):
+            n1 = min(n0 + chunk_N, N)
+            Xc = X[n0:n1, :]           # (Nc, D)
+            rc = resp[n0:n1, :]        # (Nc, K)
+            diff = Xc.unsqueeze(1) - new_means.unsqueeze(0)  # (Nc, K, D)
+            A = diff * torch.sqrt(rc).unsqueeze(2)            # (Nc, K, D)
+            A = A.permute(1, 0, 2).contiguous()               # (K, Nc, D)
+            cov_sum += torch.bmm(A.transpose(1, 2), A)        # (K, D, D)
 
         new_cov = cov_sum / nk_
         new_cov = new_cov + reg_covar * eye.unsqueeze(0)

@@ -1,400 +1,162 @@
-#!/usr/bin/env python3
-"""Benchmark comparing likelihood progression with reduced covariance update frequency.
+"""Gaussian Mixture Model with reduced covariance update frequency.
 
-This script compares the likelihood per iteration between:
-- _v1.py: Standard EM (covariance updated every iteration)
-- _v2_reduced_covariance_updates.py: Reduced-frequency covariance updates (frequency = 2..10)
+Variant of v1 where the covariance computation in the M-step is skipped on
+iterations that are not multiples of `covariance_update_frequency`. Means and
+weights are still updated every iteration; only the expensive covariance
+recomputation is throttled.
 
-The goal is to understand how reducing covariance update frequency affects:
-1. Convergence speed (iterations to converge)
-2. Likelihood progression over iterations
-3. Final likelihood achieved
-4. Total runtime
+The goal is to trade convergence rate (more EM iterations needed) against
+per-iteration cost (cheaper M-step on skipped iterations) and see whether
+total wall-clock time decreases.
+
+Exposes an additional fitted attribute after fit():
+  covariance_updates_: int  -- how many times covariance was actually updated
 """
 
-import signal
-import os
-import sys
-from pathlib import Path
-from typing import Dict
+from __future__ import annotations
 
-import numpy as np
-import pandas as pd
+from typing import List, Optional, Tuple
+
 import torch
 
-# Add parent directory to path
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-
-# Import implementations
-from implementation._v1 import TorchGaussianMixture as TorchGaussianMixture_v1
-from implementation._v2_reduced_covariance_updates import TorchGaussianMixture as TorchGaussianMixture_v2
-
-DATA_DIR = Path("results")
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-# Safe exit
-
-def cleanup_and_exit(sig, frame):
-    try:
-        torch.cuda.empty_cache()
-    finally:
-        sys.exit(0)
-
-signal.signal(signal.SIGINT, cleanup_and_exit)
-
-# Enforce GPU-only execution
-if not torch.cuda.is_available():
-    raise RuntimeError(
-        "CUDA is not available. This benchmark requires a GPU to run.\n"
-        "Please run on a machine with CUDA-capable GPU."
-    )
-
-DEVICE = torch.device("cuda")
-print(f"Using device: {DEVICE}")
-print(f"GPU: {torch.cuda.get_device_name(0)}")
-print(f"CUDA version: {torch.version.cuda}")
+from implementation._v1 import (
+    GMMParams,
+    TorchGaussianMixture as _BaseGMM,
+    _compute_precisions,
+    _expectation_step_precchol,
+    _maximization_step,
+    _nk_eps,
+)
 
 
-def generate_synthetic_gmm_data(
-    N: int = 2000,
-    D: int = 10,
-    K: int = 5,
-    seed: int = 42,
-    device=None,
-    dtype=torch.float64,
-) -> torch.Tensor:
-    """Generate synthetic data from a Gaussian mixture model.
-    
-    Args:
-        N: Number of samples
-        D: Dimensionality
-        K: Number of mixture components
-        seed: Random seed
-        device: Device to use
-        dtype: Data type
-    
-    Returns:
-        X: Generated data (N, D)
-    """
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    
-    device = DEVICE if device is None else device
-    
-    # Generate cluster centers
-    means = torch.randn(K, D, device=device, dtype=dtype) * 5
-    
-    # Generate samples per cluster
-    samples_per_cluster = N // K
-    X_list = []
-    
-    for k in range(K):
-        # Generate covariance: add some correlation structure
-        A = torch.randn(D, D, device=device, dtype=dtype)
-        cov = (A @ A.T) / D + torch.eye(D, device=device, dtype=dtype)
-        
-        # Sample from multivariate normal
-        n_k = samples_per_cluster + (N % K if k == 0 else 0)
-        mvn = torch.distributions.MultivariateNormal(means[k], cov)
-        X_k = mvn.sample((n_k,))
-        X_list.append(X_k)
-    
-    X = torch.cat(X_list, dim=0)
-    # Shuffle
-    perm = torch.randperm(X.shape[0], device=device)
-    X = X[perm]
-    
-    return X
+# ---------------------------
+# M-step with optional covariance skip
+# ---------------------------
 
-
-def get_initialized_parameters(
+def _maximization_step_reduced(
     X: torch.Tensor,
-    n_components: int,
-    covariance_type: str,
-    seed: int = 42,
-) -> Dict:
+    means: torch.Tensor,
+    cov: torch.Tensor,
+    weights: torch.Tensor,
+    log_resp: torch.Tensor,
+    cov_type: str,
+    reg_covar: float = 1e-6,
+    update_covariance: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """M-step that optionally skips the covariance recomputation.
+
+    When update_covariance=True: delegates to v1's full _maximization_step.
+    When update_covariance=False: updates only means and weights, returns the
+      old covariance unchanged. This avoids the O(N*D^2*K) covariance sum.
     """
-    Generate initialized parameters WITHOUT performing a full EM iteration.
+    if update_covariance:
+        return _maximization_step(X, means, cov, weights, log_resp, cov_type, reg_covar=reg_covar)
+
+    # Means and weights only (no covariance computation)
+    resp = log_resp.exp()                                       # (N, K)
+    nk = resp.sum(dim=0) + _nk_eps(resp.dtype)                 # (K,)
+    new_weights = nk / nk.sum()
+    new_means = (resp.T @ X) / nk.unsqueeze(1)                 # (K, D)
+    return new_means, cov, new_weights
+
+
+# ---------------------------
+# Model wrapper
+# ---------------------------
+
+class TorchGaussianMixture(_BaseGMM):
+    """GMM variant that updates the covariance only every N iterations.
+
+    All parameters are identical to the base v1 TorchGaussianMixture except:
+
+    covariance_update_frequency : int, default=1
+        Update the covariance matrix every this many EM iterations.
+        1 means every iteration (identical to v1).
+        2 means every other iteration, etc.
+
+    After fit(), the additional attribute covariance_updates_ records how many
+    times the covariance was actually recomputed.
     """
 
-    torch.manual_seed(seed)
-    np.random.seed(seed)
+    def __init__(
+        self,
+        *args,
+        covariance_update_frequency: int = 1,
+        **kwargs,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        if covariance_update_frequency < 1:
+            raise ValueError(
+                f"covariance_update_frequency must be >= 1, got {covariance_update_frequency}"
+            )
+        self.covariance_update_frequency = covariance_update_frequency
+        self.covariance_updates_: int = 0
 
-    model = TorchGaussianMixture_v1(
-        n_components=n_components,
-        covariance_type=covariance_type,
-        max_iter=1,
-        tol=1e-6,
-        n_init=1,
-        init_params="kmeans",
-        device=X.device,
-        dtype=X.dtype,
-    )
+    @torch.no_grad()
+    def fit(self, X: torch.Tensor) -> "TorchGaussianMixture":
+        X = self._to_device_dtype(X)
 
-    # Force only initialization, not EM progression
-    params = model._initialize(X)
+        best_lower = torch.tensor(float("-inf"), device=X.device, dtype=X.dtype)
+        best_params: Optional[GMMParams] = None
+        best_n_iter = 0
+        best_converged = False
+        best_history: List[float] = []
+        best_cov_updates = 0
 
-    return {
-        "means": params.means.clone(),
-        "covariances": params.cov.clone(),
-        "weights": params.weights.clone(),
-        "precisions_cholesky": params.prec_chol.clone(),
-    }
+        n_init = 1 if (self.warm_start and self._params is not None) else self.n_init
 
-def run_single_experiment(
-    X: torch.Tensor,
-    n_components: int,
-    covariance_type: str,
-    max_iter: int,
-    covariance_update_frequency: int,
-    model_class,
-    seed: int = 42,
-    initial_params: Dict = None,
-) -> Dict:
-    """Run a single GMM fitting experiment and return results."""
+        for _ in range(n_init):
+            p = self._params if (self.warm_start and self._params is not None) else self._initialize(X)
 
-    # Only set seed if we're not injecting parameters
-    if initial_params is None:
-        torch.manual_seed(seed)
-        np.random.seed(seed)
+            prev_lower = torch.tensor(float("-inf"), device=X.device, dtype=X.dtype)
+            converged = False
+            history: List[float] = []
+            covariance_updates = 0
 
-    # Instantiate model
-    if model_class == TorchGaussianMixture_v1:
-        model = model_class(
-            n_components=n_components,
-            covariance_type=covariance_type,
-            max_iter=max_iter,
-            tol=1e-6,
-            n_init=1,
-            init_params="kmeans",
-            device=X.device,
-            dtype=X.dtype,
-        )
-    else:
-        model = model_class(
-            n_components=n_components,
-            covariance_type=covariance_type,
-            max_iter=max_iter,
-            tol=1e-6,
-            n_init=1,
-            init_params="kmeans",
-            covariance_update_frequency=covariance_update_frequency,
-            device=X.device,
-            dtype=X.dtype,
-        )
+            for it in range(self.max_iter):
+                lower, log_resp = _expectation_step_precchol(
+                    X, p.means, p.prec_chol, p.weights, p.cov_type
+                )
+                history.append(float(lower.item()))
 
-    # 🔥 Proper shared initialization via _params injection
-    if initial_params is not None:
-        if model_class == TorchGaussianMixture_v1:
-            from implementation._v1 import GMMParams
-        else:
-            from implementation._v2_reduced_covariance_updates import GMMParams
+                update_cov = (it % self.covariance_update_frequency == 0)
+                means, cov, weights = _maximization_step_reduced(
+                    X, p.means, p.cov, p.weights, log_resp, p.cov_type,
+                    reg_covar=self.reg_covar,
+                    update_covariance=update_cov,
+                )
+                if update_cov:
+                    covariance_updates += 1
 
-        model._params = GMMParams(
-            weights=initial_params["weights"].clone(),
-            means=initial_params["means"].clone(),
-            cov=initial_params["covariances"].clone(),
-            prec_chol=initial_params["precisions_cholesky"].clone(),
-            cov_type=covariance_type,
-        )
+                p = self._make_params(weights, means, cov)
 
-        model.warm_start = True
-        model.n_init = 1
+                change = lower - prev_lower
+                if torch.abs(change) < self.tol:
+                    converged = True
+                    break
+                prev_lower = lower
 
-        # Optional sanity check (can remove after validation)
-        initial_ll = model.score(X).item()
-        print(f"  Initial shared log-likelihood: {initial_ll:.6f}")
+            if prev_lower > best_lower:
+                best_lower = prev_lower
+                best_params = p
+                best_n_iter = it + 1
+                best_converged = converged
+                best_history = history
+                best_cov_updates = covariance_updates
 
-    # ---- Timing with CUDA events ----
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
+        assert best_params is not None
 
-    torch.cuda.synchronize()
-    start.record()
+        self._params = best_params
+        self.weights_ = best_params.weights
+        self.means_ = best_params.means
+        self.covariances_ = best_params.cov
+        self.precisions_cholesky_ = best_params.prec_chol
+        self.precisions_ = _compute_precisions(best_params.prec_chol, best_params.cov_type)
 
-    model.fit(X)
+        self.lower_bound_ = float(best_lower.item())
+        self.lower_bounds_ = best_history
+        self.n_iter_ = best_n_iter
+        self.converged_ = best_converged
+        self.covariance_updates_ = best_cov_updates
 
-    end.record()
-    torch.cuda.synchronize()
-
-    runtime = start.elapsed_time(end)  # Returns ms directly
-
-    return {
-        "n_iter": model.n_iter_,
-        "em_iterations": model.n_iter_,
-        "log_likelihoods": [float(v) for v in model.lower_bounds_],
-        "converged": model.converged_,
-        "final_lower_bound": model.lower_bound_,
-        "runtime_ms": runtime,
-        "covariance_updates": getattr(model, "covariance_updates_", model.n_iter_),
-        "cov_updates": getattr(model, "covariance_updates_", model.n_iter_),
-    }
-
-def benchmark_likelihood_progression(
-    N: int = 2000,
-    D: int = 10,
-    K: int = 5,
-    max_iter: int = 1000,
-    covariance_type: str = "full",
-    seed: int = 42,
-) -> pd.DataFrame:
-    """Benchmark likelihood progression for different covariance update frequencies.
-    
-    Args:
-        N: Number of samples
-        D: Dimensionality
-        K: Number of components
-        max_iter: Maximum iterations
-        covariance_type: Type of covariance
-        seed: Random seed
-    
-    Returns:
-        DataFrame with results
-    """
-    print("="*80)
-    print(f"BENCHMARK: Likelihood Progression (N={N}, D={D}, K={K}, cov_type={covariance_type})")
-    print("="*80)
-    
-    # Generate data directly with the provided seed
-    X = generate_synthetic_gmm_data(N, D, K, seed=seed)
-    print(f"Using seed={seed}")
-    
-    # Get initialized parameters that will be shared across all configurations
-    print("\nGenerating initial parameters (using v1 _initialize only)...")
-    initial_params = get_initialized_parameters(
-        X, K, covariance_type, seed=seed
-    )
-    print("  Initial parameters generated and will be used for all configurations.")
-    
-    # Test configurations: freq = 1..10
-    configs = [("v1 (baseline)", TorchGaussianMixture_v1, 1)] + [
-        (f"v2 (freq={freq})", TorchGaussianMixture_v2, freq)
-        for freq in range(2, 11)
-    ]
-    
-    results = []
-    
-    for name, model_class, freq in configs:
-        print(f"\nRunning: {name}")
-        result = run_single_experiment(
-            X, K, covariance_type, max_iter, freq, model_class, seed=seed,
-            initial_params=initial_params
-        )
-        
-        print(f"  EM iterations: {result['em_iterations']}")
-        print(f"  Converged: {result['converged']}")
-        print(f"  Final log-likelihood: {result['final_lower_bound']:.4f}")
-        print(f"  Runtime: {result['runtime_ms']:.2f} ms")
-        print(f"  Covariance updates: {result['cov_updates']}/{result['em_iterations']}")
-        
-        results.append({
-            "Configuration": name,
-            "Model": "v1" if model_class == TorchGaussianMixture_v1 else "v2",
-            "Cov Update Freq": freq,
-            "N": N,
-            "D": D,
-            "K": K,
-            "Cov Type": covariance_type,
-            "Selected Seed": seed,
-            "em_iterations": result['em_iterations'],
-            "cov_updates": result['cov_updates'],
-            "log_likelihoods": result['log_likelihoods'],
-            "Iterations": result['n_iter'],
-            "Converged": result['converged'],
-            "Final Log-Likelihood": result['final_lower_bound'],
-            "Runtime (ms)": result['runtime_ms'],
-            "Covariance Updates": result['covariance_updates'],
-            "Runtime per Iteration (ms)": result['runtime_ms'] / result['n_iter'],
-        })
-    
-    df = pd.DataFrame(results)
-    return df
-
-
-def run_comprehensive_benchmark():
-    """Run comprehensive benchmark across different configurations."""
-    print("\n" + "="*80)
-    print("COMPREHENSIVE BENCHMARK: Reduced Covariance Update Frequency")
-    print("="*80 + "\n")
-    
-    all_results = []
-    
-    # Test configurations: keep N and K constant, scale D
-    # Format: (N, D, K, cov_type, max_iter)
-    moderate_N = 2000
-    moderate_K = 5
-    d_values = [3, 5, 10, 50, 100, 500, 1000]
-    test_configs = [
-        (moderate_N, D, moderate_K, "full", 1000)
-        for D in d_values
-    ]
-    
-    for i, (N, D, K, cov_type, max_iter) in enumerate(test_configs):
-        print(f"\n{'='*80}")
-        print(f"Test {i+1}/{len(test_configs)}")
-        print(f"{'='*80}")
-        
-        df = benchmark_likelihood_progression(
-            N=N, D=D, K=K, max_iter=max_iter, covariance_type=cov_type, seed=42+i
-        )
-        all_results.append(df)
-        
-        # Save CSV
-        csv_path = DATA_DIR / f"results_N{N}_D{D}_K{K}_{cov_type}.csv"
-        df.to_csv(csv_path, index=False)
-        print(f"\n  Results saved to: {csv_path}")
-    
-    # Combine all results
-    combined_df = pd.concat(all_results, ignore_index=True)
-    combined_path = DATA_DIR / "benchmark_reduced_covariance_updates_all.csv"
-    combined_df.to_csv(combined_path, index=False)
-    print(f"\n{'='*80}")
-    print(f"All results saved to: {combined_path}")
-    print(f"{'='*80}\n")
-    
-    # Print summary statistics
-    print("\nSUMMARY STATISTICS:")
-    print("="*80)
-    summary_df = combined_df.groupby('Configuration').agg({
-        'em_iterations': 'mean',
-        'Runtime (ms)': 'mean',
-        'Final Log-Likelihood': 'mean',
-        'cov_updates': 'mean',
-    }).round(2)
-
-    def _config_order_key(name: str) -> int:
-        if name == "v1 (baseline)":
-            return 1
-        if "freq=" in name:
-            try:
-                return int(name.split("freq=")[1].rstrip(")"))
-            except ValueError:
-                pass
-        return 10**9
-
-    summary_df = summary_df.reindex(
-        sorted(summary_df.index, key=_config_order_key)
-    )
-
-    print(summary_df)
-    print("="*80 + "\n")
-    
-    return combined_df
-
-
-if __name__ == "__main__":
-    print("Starting benchmark: Reduced Covariance Update Frequency (GPU-only)")
-    print(f"Device: {DEVICE}")
-    print(f"PyTorch version: {torch.__version__}")
-    print(f"Default dtype: {torch.get_default_dtype()}")
-    print(f"Number of GPUs: {torch.cuda.device_count()}")
-    print()
-    
-    # Run comprehensive benchmark
-    results = run_comprehensive_benchmark()
-    
-    print("\n" + "="*80)
-    print("BENCHMARK COMPLETE")
-    print("="*80)
-    print(f"\nResults saved to: {DATA_DIR}")
+        return self
