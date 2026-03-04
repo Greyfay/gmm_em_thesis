@@ -151,60 +151,85 @@ def run_single_experiment(
     model_class,
     seed: int = 42,
     initial_params: Dict = None,
+    n_runs: int = 5,
 ) -> Dict:
-    """Run a single GMM fitting experiment and return results."""
+    """Run a GMM fitting experiment n_runs times and return aggregated timing stats.
+
+    Each timed run starts from the same initial_params (fresh model + param
+    injection per run), so variance in runtime reflects GPU noise only, not
+    differences in optimisation trajectory.
+    """
 
     # Only set seed if we're not injecting parameters
     if initial_params is None:
         torch.manual_seed(seed)
         np.random.seed(seed)
 
-    # Instantiate model
-    if model_class == TorchGaussianMixture_v1:
-        model = model_class(
-            n_components=n_components,
-            covariance_type=covariance_type,
-            max_iter=max_iter,
-            tol=1e-6,
-            n_init=1,
-            init_params="kmeans",
-            device=X.device,
-            dtype=X.dtype,
-        )
-    else:
-        model = model_class(
-            n_components=n_components,
-            covariance_type=covariance_type,
-            max_iter=max_iter,
-            tol=1e-6,
-            n_init=1,
-            init_params="kmeans",
-            covariance_update_frequency=covariance_update_frequency,
-            device=X.device,
-            dtype=X.dtype,
-        )
-
-    # 🔥 Proper shared initialization via _params injection
+    # Resolve GMMParams once so the factory closure can use it.
     if initial_params is not None:
         if model_class == TorchGaussianMixture_v1:
             from implementation._v1 import GMMParams
         else:
             from implementation._v2_reduced_covariance_updates import GMMParams
 
-        model._params = GMMParams(
+        # Sanity-check: print initial log-likelihood once before timing.
+        _probe = model_class(
+            n_components=n_components,
+            covariance_type=covariance_type,
+            max_iter=1,
+            n_init=1,
+            init_params="kmeans",
+            device=X.device,
+            dtype=X.dtype,
+        )
+        _probe._params = GMMParams(
             weights=initial_params["weights"].clone(),
             means=initial_params["means"].clone(),
             cov=initial_params["covariances"].clone(),
             prec_chol=initial_params["precisions_cholesky"].clone(),
             cov_type=covariance_type,
         )
+        print(f"  Initial shared log-likelihood: {_probe.score(X).item():.6f}")
+        del _probe
+    else:
+        GMMParams = None  # unused when no injection
 
-        model.warm_start = True
-        model.n_init = 1
-
-        # Optional sanity check (can remove after validation)
-        initial_ll = model.score(X).item()
-        print(f"  Initial shared log-likelihood: {initial_ll:.6f}")
+    def make_model():
+        """Create a fresh model with identical starting params for each run."""
+        if model_class == TorchGaussianMixture_v1:
+            m = model_class(
+                n_components=n_components,
+                covariance_type=covariance_type,
+                max_iter=max_iter,
+                tol=1e-6,
+                n_init=1,
+                init_params="kmeans",
+                device=X.device,
+                dtype=X.dtype,
+            )
+        else:
+            m = model_class(
+                n_components=n_components,
+                covariance_type=covariance_type,
+                max_iter=max_iter,
+                tol=1e-6,
+                n_init=1,
+                init_params="kmeans",
+                covariance_update_frequency=covariance_update_frequency,
+                device=X.device,
+                dtype=X.dtype,
+            )
+        if initial_params is not None:
+            m._params = GMMParams(
+                weights=initial_params["weights"].clone(),
+                means=initial_params["means"].clone(),
+                cov=initial_params["covariances"].clone(),
+                prec_chol=initial_params["precisions_cholesky"].clone(),
+                cov_type=covariance_type,
+            )
+            m.warm_start = True
+            m.n_init = 1
+        return m
 
     # ---- Warmup: prime CUDA kernels before timing ----
     if model_class == TorchGaussianMixture_v1:
@@ -232,29 +257,35 @@ def run_single_experiment(
     torch.cuda.synchronize()
     del _warmup
 
-    # ---- Timing with CUDA events ----
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
+    # ---- Timed runs ----
+    runtimes_ms: List[float] = []
+    last_model = None
+    for _ in range(n_runs):
+        m = make_model()
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        torch.cuda.synchronize()
+        start.record()
+        m.fit(X)
+        end.record()
+        torch.cuda.synchronize()
+        runtimes_ms.append(start.elapsed_time(end))
+        last_model = m
 
-    torch.cuda.synchronize()
-    start.record()
-
-    model.fit(X)
-
-    end.record()
-    torch.cuda.synchronize()
-
-    runtime = start.elapsed_time(end)  # Returns ms directly
-
+    runtimes = np.array(runtimes_ms)
     return {
-        "n_iter": model.n_iter_,
-        "em_iterations": model.n_iter_,
-        "log_likelihoods": [float(v) for v in model.lower_bounds_],
-        "converged": model.converged_,
-        "final_lower_bound": model.lower_bound_,
-        "runtime_ms": runtime,
-        "covariance_updates": getattr(model, "covariance_updates_", model.n_iter_),
-        "cov_updates": getattr(model, "covariance_updates_", model.n_iter_),
+        "n_iter": last_model.n_iter_,
+        "em_iterations": last_model.n_iter_,
+        "log_likelihoods": [float(v) for v in last_model.lower_bounds_],
+        "converged": last_model.converged_,
+        "final_lower_bound": last_model.lower_bound_,
+        "runtime_mean_ms": float(runtimes.mean()),
+        "runtime_std_ms": float(runtimes.std()),
+        "runtime_median_ms": float(np.median(runtimes)),
+        "runtime_min_ms": float(runtimes.min()),
+        "runtime_max_ms": float(runtimes.max()),
+        "covariance_updates": getattr(last_model, "covariance_updates_", last_model.n_iter_),
+        "cov_updates": getattr(last_model, "covariance_updates_", last_model.n_iter_),
     }
 
 def benchmark_likelihood_progression(
@@ -264,6 +295,7 @@ def benchmark_likelihood_progression(
     max_iter: int = 1000,
     covariance_type: str = "full",
     seed: int = 42,
+    n_runs: int = 5,
 ) -> pd.DataFrame:
     """Benchmark likelihood progression for different covariance update frequencies.
     
@@ -305,15 +337,17 @@ def benchmark_likelihood_progression(
         print(f"\nRunning: {name}")
         result = run_single_experiment(
             X, K, covariance_type, max_iter, freq, model_class, seed=seed,
-            initial_params=initial_params
+            initial_params=initial_params, n_runs=n_runs,
         )
-        
+
         print(f"  EM iterations: {result['em_iterations']}")
         print(f"  Converged: {result['converged']}")
         print(f"  Final log-likelihood: {result['final_lower_bound']:.4f}")
-        print(f"  Runtime: {result['runtime_ms']:.2f} ms")
+        print(f"  Runtime: {result['runtime_mean_ms']:.2f} ± {result['runtime_std_ms']:.2f} ms"
+              f"  (median {result['runtime_median_ms']:.2f}, "
+              f"min {result['runtime_min_ms']:.2f}, max {result['runtime_max_ms']:.2f})")
         print(f"  Covariance updates: {result['cov_updates']}/{result['em_iterations']}")
-        
+
         results.append({
             "Configuration": name,
             "Model": "v1" if model_class == TorchGaussianMixture_v1 else "v2",
@@ -323,22 +357,27 @@ def benchmark_likelihood_progression(
             "K": K,
             "Cov Type": covariance_type,
             "Selected Seed": seed,
+            "n_runs": n_runs,
             "em_iterations": result['em_iterations'],
             "cov_updates": result['cov_updates'],
             "log_likelihoods": result['log_likelihoods'],
             "Iterations": result['n_iter'],
             "Converged": result['converged'],
             "Final Log-Likelihood": result['final_lower_bound'],
-            "Runtime (ms)": result['runtime_ms'],
+            "Runtime Mean (ms)": result['runtime_mean_ms'],
+            "Runtime Std (ms)": result['runtime_std_ms'],
+            "Runtime Median (ms)": result['runtime_median_ms'],
+            "Runtime Min (ms)": result['runtime_min_ms'],
+            "Runtime Max (ms)": result['runtime_max_ms'],
             "Covariance Updates": result['covariance_updates'],
-            "Runtime per Iteration (ms)": result['runtime_ms'] / result['n_iter'],
+            "Runtime per Iteration (ms)": result['runtime_mean_ms'] / result['n_iter'],
         })
     
     df = pd.DataFrame(results)
     return df
 
 
-def run_comprehensive_benchmark():
+def run_comprehensive_benchmark(n_runs: int = 5):
     """Run comprehensive benchmark across different configurations."""
     print("\n" + "="*80)
     print("COMPREHENSIVE BENCHMARK: Reduced Covariance Update Frequency")
@@ -362,7 +401,7 @@ def run_comprehensive_benchmark():
         print(f"{'='*80}")
         
         df = benchmark_likelihood_progression(
-            N=N, D=D, K=K, max_iter=max_iter, covariance_type=cov_type, seed=42+i
+            N=N, D=D, K=K, max_iter=max_iter, covariance_type=cov_type, seed=42+i, n_runs=n_runs,
         )
         all_results.append(df)
         
@@ -384,7 +423,8 @@ def run_comprehensive_benchmark():
     print("="*80)
     summary_df = combined_df.groupby('Configuration').agg({
         'em_iterations': 'mean',
-        'Runtime (ms)': 'mean',
+        'Runtime Mean (ms)': 'mean',
+        'Runtime Std (ms)': 'mean',
         'Final Log-Likelihood': 'mean',
         'cov_updates': 'mean',
     }).round(2)
@@ -417,8 +457,8 @@ if __name__ == "__main__":
     print(f"Number of GPUs: {torch.cuda.device_count()}")
     print()
     
-    # Run comprehensive benchmark
-    results = run_comprehensive_benchmark()
+    # Run comprehensive benchmark (n_runs=5 timed fits per config for robust stats)
+    results = run_comprehensive_benchmark(n_runs=5)
     
     print("\n" + "="*80)
     print("BENCHMARK COMPLETE")
