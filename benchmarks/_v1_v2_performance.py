@@ -10,23 +10,14 @@ This test measures (CUDA-accurate):
 Design notes:
 - Uses CUDA synchronize around timed regions (GPU kernels are async).
 - Uses multiple runs with warmup and reports mean/std.
-- Measures covariance time by instrumenting the *actual implementation code path*
-  via a lightweight hook in _maximization_step (monkeypatch wrapper that calls the
-  original function, but reads per-call timing written by a local timer around the
-  covariance region inside an injected wrapper).
+- Measures covariance time by monkeypatching _maximization_step and timing ONLY the
+  covariance-update region, reproducing the exact covariance path for each impl:
+    * v1: monolithic einsum full-cov update
+    * v2: tiled full-cov update + upper-triangular tiling + mirroring (symmetry)
 
 IMPORTANT:
-- To measure covariance-only time without rewriting the implementation, we wrap
-  the original _maximization_step and reproduce ONLY the covariance timing by
-  calling the original function and timing just the covariance section via an
-  internal helper that matches each implementation's covariance path:
-    * v1: monolithic einsum full-cov update
-    * v2: tiled full-cov update (respects tiling_size / tile_B)
-
-This script assumes:
-- v1._maximization_step signature: (X, means, cov, weights, log_resp, cov_type, reg_covar=...)
-- v2._maximization_step signature: (X, means, cov, weights, log_resp, cov_type, reg_covar=..., tile_B=None)
-- v2.TorchGaussianMixture.fit supports tiling_size parameter and passes tile_B through.
+- We reset covariance stats AFTER warmup so totals correspond to the timed runs only.
+- We run everything under torch.no_grad() for clean benchmarking.
 """
 
 import os
@@ -68,7 +59,6 @@ def generate_test_data(
 # -----------------------
 
 def _cuda_sync_if_needed(x: torch.Tensor) -> None:
-    # Only synchronize if we're on CUDA
     if x.is_cuda:
         torch.cuda.synchronize()
 
@@ -78,10 +68,13 @@ def measure_fit_runtime(
     X: torch.Tensor,
     n_runs: int = 5,
     warmup: int = 2,
+    on_after_warmup=None,
 ) -> Tuple[float, float, Any]:
     """
     Measure mean/std of model.fit time (CUDA-accurate).
     Returns: (mean_s, std_s, last_model)
+
+    NOTE: If provided, on_after_warmup() is called exactly once after warmup.
     """
     # Warmup
     model = None
@@ -91,8 +84,11 @@ def measure_fit_runtime(
         model.fit(X)  # do NOT clone; fit should not mutate X
         _cuda_sync_if_needed(X)
 
+    if on_after_warmup is not None:
+        on_after_warmup()
+
     # Timed runs
-    times = []
+    times: List[float] = []
     last_model = None
     for _ in range(n_runs):
         model = make_model_fn()
@@ -115,11 +111,12 @@ def make_cov_timer_v1() -> Tuple[Dict[str, float], Any]:
     """
     Monkeypatch v1._maximization_step so we can accumulate covariance-only time
     while still returning the same outputs as the original function.
+
+    We time ONLY the full-covariance update path for v1.
     """
     original = v1._maximization_step
-    stats = {"cov_time_s": 0.0, "count": 0}
+    stats: Dict[str, float] = {"cov_time_s": 0.0, "count": 0.0}
 
-    # Pull helpers from v1 to keep semantics identical
     _nk_eps = v1._nk_eps
 
     def wrapped(
@@ -131,14 +128,10 @@ def make_cov_timer_v1() -> Tuple[Dict[str, float], Any]:
         cov_type: str,
         reg_covar: float = 1e-6,
     ):
-        # We call original for correctness, but we also time the *actual covariance path* for v1.
-        # For v1 full-cov, covariance update is the monolithic einsum using diff.
-        # If cov_type is not 'full', we just fall back to original without counting.
-
         if cov_type != "full":
             return original(X, means, cov, weights, log_resp, cov_type, reg_covar=reg_covar)
 
-        # Compute shared intermediates exactly as in M-step (not timed):
+        # Shared intermediates (NOT timed)
         resp = log_resp.exp()
         nk = resp.sum(dim=0) + _nk_eps(resp.dtype)
         new_weights = nk / nk.sum()
@@ -158,7 +151,7 @@ def make_cov_timer_v1() -> Tuple[Dict[str, float], Any]:
         t1 = time.perf_counter()
 
         stats["cov_time_s"] += (t1 - t0)
-        stats["count"] += 1
+        stats["count"] += 1.0
 
         return new_means, new_cov, new_weights
 
@@ -169,12 +162,19 @@ def make_cov_timer_v1() -> Tuple[Dict[str, float], Any]:
 def make_cov_timer_v2() -> Tuple[Dict[str, float], Any]:
     """
     Monkeypatch v2._maximization_step so we can accumulate covariance-only time
-    for the *tiled* full-cov path (respects tile_B).
+    for the tiled + upper-triangular full-cov path (respects tile_B).
+
+    This matches your current v2 covariance branch:
+
+      - tile over i blocks
+      - for each i block, iterate j from i..D (upper triangle)
+      - write cov_block into [i,j]
+      - if j != i, mirror transpose into [j,i]
     """
     original = v2._maximization_step
-    stats = {"cov_time_s": 0.0, "count": 0}
+    stats: Dict[str, float] = {"cov_time_s": 0.0, "count": 0.0}
 
-    _nk_eps = v2._nk_eps  # use v2's helper
+    _nk_eps = v2._nk_eps
 
     def wrapped(
         X: torch.Tensor,
@@ -191,7 +191,7 @@ def make_cov_timer_v2() -> Tuple[Dict[str, float], Any]:
                 X, means, cov, weights, log_resp, cov_type, reg_covar=reg_covar, tile_B=tile_B
             )
 
-        # Match v2 semantics for shared intermediates (not timed)
+        # Shared intermediates (NOT timed)
         resp = log_resp.exp()
         nk = resp.sum(dim=0) + _nk_eps(resp.dtype)
         new_weights = nk / nk.sum()
@@ -209,23 +209,29 @@ def make_cov_timer_v2() -> Tuple[Dict[str, float], Any]:
         t0 = time.perf_counter()
 
         cov_sum = torch.zeros((K, D, D), device=X.device, dtype=X.dtype)
-        nk_ = nk.unsqueeze(1).unsqueeze(2)
+        nk_ = nk.unsqueeze(1).unsqueeze(2)  # (K,1,1)
         eye = torch.eye(D, device=X.device, dtype=X.dtype)
 
+        # Tiling over feature dimensions (upper-triangular blocks)
         for i in range(0, D, B):
             i2 = min(i + B, D)
-            Xi = X[:, i:i2].unsqueeze(1)          # (N,1,Bi)
-            Mi = new_means[:, i:i2].unsqueeze(0)  # (1,K,Bi)
-            diff_i = Xi - Mi                      # (N,K,Bi)
 
-            for j in range(0, D, B):
+            Xi = X[:, i:i2].unsqueeze(1)           # (N,1,Bi)
+            Mi = new_means[:, i:i2].unsqueeze(0)   # (1,K,Bi)
+            diff_i = Xi - Mi                        # (N,K,Bi)
+
+            for j in range(i, D, B):
                 j2 = min(j + B, D)
-                Xj = X[:, j:j2].unsqueeze(1)          # (N,1,Bj)
-                Mj = new_means[:, j:j2].unsqueeze(0)  # (1,K,Bj)
-                diff_j = Xj - Mj                      # (N,K,Bj)
+
+                Xj = X[:, j:j2].unsqueeze(1)        # (N,1,Bj)
+                Mj = new_means[:, j:j2].unsqueeze(0)# (1,K,Bj)
+                diff_j = Xj - Mj                     # (N,K,Bj)
 
                 cov_block = torch.einsum("nk,nkb,nkc->kbc", resp, diff_i, diff_j)
+
                 cov_sum[:, i:i2, j:j2] = cov_block
+                if j != i:
+                    cov_sum[:, j:j2, i:i2] = cov_block.transpose(-1, -2)
 
         new_cov = cov_sum / nk_
         new_cov = new_cov + reg_covar * eye.unsqueeze(0)
@@ -234,7 +240,7 @@ def make_cov_timer_v2() -> Tuple[Dict[str, float], Any]:
         t1 = time.perf_counter()
 
         stats["cov_time_s"] += (t1 - t0)
-        stats["count"] += 1
+        stats["count"] += 1.0
 
         return new_means, new_cov, new_weights
 
@@ -246,6 +252,7 @@ def make_cov_timer_v2() -> Tuple[Dict[str, float], Any]:
 # Tests
 # -----------------------
 
+@torch.no_grad()
 def test_v1_full_covariance() -> List[Dict[str, Any]]:
     print("\n" + "=" * 80)
     print("TEST: v1 (full covariance)")
@@ -260,7 +267,7 @@ def test_v1_full_covariance() -> List[Dict[str, Any]]:
         (500, 20, 5, 50),
         (1000, 50, 10, 50),
         (2000, 100, 20, 50),
-        # Optional stress config to make tiling effects visible:
+        # Stress config:
         (1000, 256, 16, 30),
     ]
 
@@ -273,6 +280,7 @@ def test_v1_full_covariance() -> List[Dict[str, Any]]:
         try:
             def make_model():
                 torch.manual_seed(42)
+                np.random.seed(42)
                 return v1.TorchGaussianMixture(
                     n_components=K,
                     covariance_type=cov_type,
@@ -283,12 +291,18 @@ def test_v1_full_covariance() -> List[Dict[str, Any]]:
                     dtype=dtype,
                 )
 
-            mean_fit, std_fit, model = measure_fit_runtime(make_model, X, n_runs=5, warmup=2)
+            def reset_cov_stats_after_warmup():
+                cov_stats["cov_time_s"] = 0.0
+                cov_stats["count"] = 0.0
+
+            mean_fit, std_fit, model = measure_fit_runtime(
+                make_model, X, n_runs=5, warmup=2, on_after_warmup=reset_cov_stats_after_warmup
+            )
 
             final_ll = float(model.lower_bound_)
             n_iter = int(model.n_iter_)
 
-            cov_time = cov_stats["cov_time_s"]
+            cov_time = float(cov_stats["cov_time_s"])
             cov_count = int(cov_stats["count"])
             avg_cov_ms = (cov_time / max(cov_count, 1)) * 1000.0
 
@@ -319,6 +333,7 @@ def test_v1_full_covariance() -> List[Dict[str, Any]]:
     return results
 
 
+@torch.no_grad()
 def test_v2_tiling_sweep() -> List[Dict[str, Any]]:
     print("\n" + "=" * 80)
     print("TEST: v2 (full covariance) tiling_size sweep")
@@ -333,7 +348,6 @@ def test_v2_tiling_sweep() -> List[Dict[str, Any]]:
         (500, 20, 5, 50),
         (1000, 50, 10, 50),
         (2000, 100, 20, 50),
-        # Optional stress config:
         (1000, 256, 16, 30),
     ]
 
@@ -351,6 +365,7 @@ def test_v2_tiling_sweep() -> List[Dict[str, Any]]:
             try:
                 def make_model():
                     torch.manual_seed(42)
+                    np.random.seed(42)
                     return v2.TorchGaussianMixture(
                         n_components=K,
                         covariance_type=cov_type,
@@ -362,12 +377,18 @@ def test_v2_tiling_sweep() -> List[Dict[str, Any]]:
                         tiling_size=B,
                     )
 
-                mean_fit, std_fit, model = measure_fit_runtime(make_model, X, n_runs=5, warmup=2)
+                def reset_cov_stats_after_warmup():
+                    cov_stats["cov_time_s"] = 0.0
+                    cov_stats["count"] = 0.0
+
+                mean_fit, std_fit, model = measure_fit_runtime(
+                    make_model, X, n_runs=5, warmup=2, on_after_warmup=reset_cov_stats_after_warmup
+                )
 
                 final_ll = float(model.lower_bound_)
                 n_iter = int(model.n_iter_)
 
-                cov_time = cov_stats["cov_time_s"]
+                cov_time = float(cov_stats["cov_time_s"])
                 cov_count = int(cov_stats["count"])
                 avg_cov_ms = (cov_time / max(cov_count, 1)) * 1000.0
 
@@ -403,10 +424,16 @@ def main():
         print("ERROR: This test requires CUDA (GPU). No CUDA device found.")
         sys.exit(1)
 
+    # Optional: stabilize/accelerate cuDNN heuristics on fixed shapes
+    torch.backends.cudnn.benchmark = True
+
     print("=" * 80)
     print("PERFORMANCE TEST: v1 vs v2 (covariance timing + tiling sweep)")
     print("=" * 80)
     print(f"PyTorch version: {torch.__version__}")
+    print(f"CUDA version (torch): {torch.version.cuda}")
+    print(f"cuDNN version: {torch.backends.cudnn.version()}")
+    print(f"GPU: {torch.cuda.get_device_name(0)}")
     print("Device: CUDA")
     print(f"CUDA available: {torch.cuda.is_available()}\n")
 
@@ -415,7 +442,7 @@ def main():
     v1_results = test_v1_full_covariance()
     v2_results = test_v2_tiling_sweep()
 
-    combined = []
+    combined: List[Dict[str, Any]] = []
     combined.extend(v1_results)
     combined.extend(v2_results)
 
@@ -427,15 +454,9 @@ def main():
 
         # Compute v1 baseline (avg cov time per call) by D
         df_v1 = df[df["Implementation"] == "v1"]
-        v1_baseline = {}
-        for _, row in df_v1.iterrows():
-            D = row["D"]
-            avg_ms = row["Avg Cov Time (ms)"]
-            if D not in v1_baseline:
-                v1_baseline[D] = []
-            v1_baseline[D].append(avg_ms)
-        # Average multiple runs of same D
-        v1_baseline = {D: float(np.mean(times)) for D, times in v1_baseline.items()}
+        v1_baseline: Dict[int, float] = {}
+        for D in sorted(df_v1["D"].unique()):
+            v1_baseline[int(D)] = float(df_v1[df_v1["D"] == D]["Avg Cov Time (ms)"].mean())
 
         print("\n" + "=" * 80)
         print("SUMMARY: Avg Covariance Time (ms) vs Tiling Size for each D")
@@ -443,31 +464,34 @@ def main():
 
         df_v2 = df[df["Implementation"] == "v2"]
         for D in sorted(df_v2["D"].unique()):
+            D_int = int(D)
             df_d = df_v2[df_v2["D"] == D]
-            print(f"\nD={D}:")
-            print(f"  v1 baseline: {v1_baseline.get(D, np.nan):.3f} ms")
-            print(f"  \n  B (tiling_size) | Avg Cov Time (ms) | Ratio to v1")
+            base = v1_baseline.get(D_int, float("nan"))
+            print(f"\nD={D_int}:")
+            print(f"  v1 baseline: {base:.3f} ms")
+            print(f"\n  B (tiling_size) | Avg Cov Time (ms) | Ratio to v1")
             print(f"  " + "-" * 50)
             for _, row in df_d.sort_values("Tiling Size").iterrows():
                 B = int(row["Tiling Size"])
-                avg_ms = row["Avg Cov Time (ms)"]
-                ratio = avg_ms / v1_baseline.get(D, 1.0) if D in v1_baseline else np.nan
+                avg_ms = float(row["Avg Cov Time (ms)"])
+                ratio = avg_ms / base if base == base else float("nan")  # base==base checks not-NaN
                 print(f"  {B:4d}             | {avg_ms:17.3f} | {ratio:7.3f}x")
 
         print("\n" + "=" * 80)
         print("SUMMARY: Ratio to v1 (lower is faster)")
         print("=" * 80)
-        for D in sorted(v1_baseline.keys()):
-            df_d = df_v2[df_v2["D"] == D]
-            if len(df_d) > 0:
-                print(f"\nD={D}:")
-                for _, row in df_d.sort_values("Tiling Size").iterrows():
-                    B = int(row["Tiling Size"])
-                    avg_ms = row["Avg Cov Time (ms)"]
-                    ratio = avg_ms / v1_baseline.get(D, 1.0)
-                    speedup = "faster" if ratio < 1.0 else "slower"
-                    pct_diff = abs(ratio - 1.0) * 100
-                    print(f"  B={B:3d}: {ratio:.3f}x ({pct_diff:.1f}% {speedup})")
+        for D_int, base in v1_baseline.items():
+            df_d = df_v2[df_v2["D"] == D_int]
+            if len(df_d) == 0:
+                continue
+            print(f"\nD={D_int}:")
+            for _, row in df_d.sort_values("Tiling Size").iterrows():
+                B = int(row["Tiling Size"])
+                avg_ms = float(row["Avg Cov Time (ms)"])
+                ratio = avg_ms / base
+                speedup = "faster" if ratio < 1.0 else "slower"
+                pct_diff = abs(ratio - 1.0) * 100.0
+                print(f"  B={B:3d}: {ratio:.3f}x ({pct_diff:.1f}% {speedup})")
 
 
 if __name__ == "__main__":
