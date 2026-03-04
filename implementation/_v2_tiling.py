@@ -365,8 +365,9 @@ def _maximization_step(
             # A: (Nc, K, D)
             A = diff * torch.sqrt(rc).unsqueeze(2)
 
-            # bmm expects (K, Nc, D)
-            A = A.permute(1, 0, 2).contiguous()          # (K, Nc, D)
+            # bmm expects (batch, rows, cols): permute to (K, Nc, D).
+            # No .contiguous() needed — cuBLAS handles strided inputs natively.
+            A = A.permute(1, 0, 2)                        # (K, Nc, D) strided
             cov_sum += torch.bmm(A.transpose(1, 2), A)   # (K, D, D)
 
         new_cov = cov_sum / nk_

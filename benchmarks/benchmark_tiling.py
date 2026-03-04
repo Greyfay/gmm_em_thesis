@@ -215,7 +215,7 @@ def make_cov_timer_v2() -> Tuple[Dict[str, float], Any]:
             rc = resp[n0:n1, :]        # (Nc, K)
             diff = Xc.unsqueeze(1) - new_means.unsqueeze(0)  # (Nc, K, D)
             A = diff * torch.sqrt(rc).unsqueeze(2)            # (Nc, K, D)
-            A = A.permute(1, 0, 2).contiguous()               # (K, Nc, D)
+            A = A.permute(1, 0, 2)                             # (K, Nc, D) strided
             cov_sum += torch.bmm(A.transpose(1, 2), A)        # (K, D, D)
 
         new_cov = cov_sum / nk_
@@ -248,12 +248,20 @@ def test_v1_full_covariance() -> List[Dict[str, Any]]:
     dtype = torch.float64
     cov_type = "full"
 
+    # N sweep at two representative D values.
+    # D=128: moderate dimensionality; D=512: high dimensionality where
+    # (N,K,D) memory pressure sets in sooner.
     test_configs = [
-        (1000, 32, 4, 50),
-        (1000, 64, 4, 50),
-        (1000, 128, 4, 50),
-        (1000, 256, 4, 50),
-        (1000, 512, 4, 50),
+        (1000,   128, 4, 50),
+        (1000,   512, 4, 50),
+        (5000,   128, 4, 50),
+        (5000,   512, 4, 50),
+        (10000,  128, 4, 50),
+        (10000,  512, 4, 50),
+        (50000,  128, 4, 50),
+        (50000,  512, 4, 50),
+        (100000, 128, 4, 50),
+        (100000, 512, 4, 50),
     ]
 
     for N, D, K, max_iter in test_configs:
@@ -329,15 +337,23 @@ def test_v2_tiling_sweep() -> List[Dict[str, Any]]:
     dtype = torch.float64
     cov_type = "full"
 
+    # Same N×D grid as v1 for apples-to-apples comparison.
     test_configs = [
-        (1000, 32, 4, 50),
-        (1000, 64, 4, 50),
-        (1000, 128, 4, 50),
-        (1000, 256, 4, 50),
-        (1000, 512, 4, 50),
+        (1000,   128, 4, 50),
+        (1000,   512, 4, 50),
+        (5000,   128, 4, 50),
+        (5000,   512, 4, 50),
+        (10000,  128, 4, 50),
+        (10000,  512, 4, 50),
+        (50000,  128, 4, 50),
+        (50000,  512, 4, 50),
+        (100000, 128, 4, 50),
+        (100000, 512, 4, 50),
     ]
 
-    tiling_sizes = [4, 16, 32, 64, 128]
+    # Chunk sizes large enough to keep the Python loop overhead low and
+    # match the memory-pressure regime where chunking is meaningful.
+    tiling_sizes = [1024, 2048, 4096, 8192]
 
     for N, D, K, max_iter in test_configs:
         print(f"\n--- Config: N={N}, D={D}, K={K}, max_iter={max_iter} ---")
@@ -438,46 +454,37 @@ def main():
         df.to_csv(out, index=False)
         print(f"\n✓ Results saved to: {out}")
 
-        # Compute v1 baseline (avg cov time per call) by D
+        # Compute v1 baseline (avg cov time per call) keyed by (N, D).
         df_v1 = df[df["Implementation"] == "v1"]
-        v1_baseline: Dict[int, float] = {}
-        for D in sorted(df_v1["D"].unique()):
-            v1_baseline[int(D)] = float(df_v1[df_v1["D"] == D]["Avg Cov Time (ms)"].mean())
+        v1_baseline: Dict[tuple, float] = {}
+        for (N_key, D_key), grp in df_v1.groupby(["N", "D"]):
+            v1_baseline[(int(N_key), int(D_key))] = float(grp["Avg Cov Time (ms)"].mean())
 
         print("\n" + "=" * 80)
-        print("SUMMARY: Avg Covariance Time (ms) vs Tiling Size for each D")
+        print("SUMMARY: Avg Covariance Time (ms) vs chunk_N for each (N, D)")
         print("=" * 80)
 
         df_v2 = df[df["Implementation"] == "v2"]
         for D in sorted(df_v2["D"].unique()):
             D_int = int(D)
-            df_d = df_v2[df_v2["D"] == D]
-            base = v1_baseline.get(D_int, float("nan"))
-            print(f"\nD={D_int}:")
-            print(f"  v1 baseline: {base:.3f} ms")
-            print(f"\n  B (tiling_size) | Avg Cov Time (ms) | Ratio to v1")
-            print(f"  " + "-" * 50)
-            for _, row in df_d.sort_values("Tiling Size").iterrows():
-                B = int(row["Tiling Size"])
-                avg_ms = float(row["Avg Cov Time (ms)"])
-                ratio = avg_ms / base if base == base else float("nan")  # base==base checks not-NaN
-                print(f"  {B:4d}             | {avg_ms:17.3f} | {ratio:7.3f}x")
-
-        print("\n" + "=" * 80)
-        print("SUMMARY: Ratio to v1 (lower is faster)")
-        print("=" * 80)
-        for D_int, base in v1_baseline.items():
-            df_d = df_v2[df_v2["D"] == D_int]
-            if len(df_d) == 0:
-                continue
-            print(f"\nD={D_int}:")
-            for _, row in df_d.sort_values("Tiling Size").iterrows():
-                B = int(row["Tiling Size"])
-                avg_ms = float(row["Avg Cov Time (ms)"])
-                ratio = avg_ms / base
-                speedup = "faster" if ratio < 1.0 else "slower"
-                pct_diff = abs(ratio - 1.0) * 100.0
-                print(f"  B={B:3d}: {ratio:.3f}x ({pct_diff:.1f}% {speedup})")
+            print(f"\n{'=' * 40}")
+            print(f"D={D_int}")
+            for N in sorted(df_v2["N"].unique()):
+                N_int = int(N)
+                df_nd = df_v2[(df_v2["D"] == D) & (df_v2["N"] == N)]
+                if len(df_nd) == 0:
+                    continue
+                base = v1_baseline.get((N_int, D_int), float("nan"))
+                print(f"\n  N={N_int}, v1 baseline: {base:.3f} ms")
+                print(f"  {'chunk_N':>8} | {'Avg Cov (ms)':>14} | {'Ratio':>7} |")
+                print(f"  " + "-" * 42)
+                for _, row in df_nd.sort_values("Tiling Size").iterrows():
+                    B = int(row["Tiling Size"])
+                    avg_ms = float(row["Avg Cov Time (ms)"])
+                    ratio = avg_ms / base if base == base else float("nan")
+                    speedup = "faster" if ratio < 1.0 else "slower"
+                    pct = abs(ratio - 1.0) * 100.0
+                    print(f"  {B:>8} | {avg_ms:>14.3f} | {ratio:>7.3f}x | {pct:.1f}% {speedup}")
 
 
 if __name__ == "__main__":
