@@ -301,31 +301,33 @@ def _maximization_step(
     new_weights = nk / nk.sum()
     new_means = (resp.T @ X) / nk.unsqueeze(1)  # (K,D)
 
-    diff = X.unsqueeze(1) - new_means.unsqueeze(0)  # (N,K,D)
+    # Only build diff where it's actually needed (tied only).
+    diff = None
+    if cov_type == "tied":
+        diff = X.unsqueeze(1) - new_means.unsqueeze(0)  # (N,K,D)
 
     if cov_type == "diag":
-        # Vectorized computation: (resp * diff^2).sum over N, then divide by nk
-        # resp: (N,K), diff: (N,K,D)
-        weighted_sq_diff = resp.unsqueeze(2) * (diff ** 2)  # (N,K,D)
-        new_cov = weighted_sq_diff.sum(dim=0) / nk.unsqueeze(1)  # (K,D)
-        new_cov = new_cov + reg_covar
+        # Use E[X^2] - E[X]^2 formula to avoid materializing diff
+        avg_X2 = (resp.T @ (X * X)) / nk.unsqueeze(1)     # (K,D)
+        avg_means2 = new_means * new_means               # (K,D)
+        new_cov = (avg_X2 - avg_means2) + reg_covar      # (K,D)
 
     elif cov_type == "spherical":
+        # Same formula as diag, then average across dimensions
         avg_X2 = (resp.T @ (X * X)) / nk.unsqueeze(1)     # (K,D)
         avg_means2 = new_means * new_means               # (K,D)
         diag_cov = (avg_X2 - avg_means2) + reg_covar      # (K,D)
         new_cov = diag_cov.mean(dim=1)                    # (K,)
 
     elif cov_type == "tied":
-        # Compute tied covariance in one einsum operation
         # sum_k sum_n resp[n,k] * diff[n,k,:] * diff[n,k,:]^T
         cov_sum = torch.einsum('nk,nkd,nke->de', resp, diff, diff)  # (D,D)
         new_cov = cov_sum / nk.sum()
         new_cov = new_cov + reg_covar * torch.eye(D, device=X.device, dtype=X.dtype)
 
     else:  # full
-        # Compute full covariance for all components in one einsum operation
         # For each k: sum_n resp[n,k] * diff[n,k,:] * diff[n,k,:]^T / nk[k]
+        diff = X.unsqueeze(1) - new_means.unsqueeze(0)  # (N,K,D)
         cov_sum = torch.einsum('nk,nkd,nke->kde', resp, diff, diff)  # (K,D,D)
         new_cov = cov_sum / nk.unsqueeze(1).unsqueeze(2)  # (K,D,D)
         eye = torch.eye(D, device=X.device, dtype=X.dtype)

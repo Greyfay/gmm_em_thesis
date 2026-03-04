@@ -286,6 +286,7 @@ def _maximization_step(
     log_resp: torch.Tensor,
     cov_type: str,
     reg_covar: float = 1e-6,
+    tile_B: Optional[int] = None,   # <-- v2 knob; used for full covariance
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """M-step (sklearn-style) producing updated means/cov/weights."""
     _check_cov_type(cov_type)
@@ -301,34 +302,61 @@ def _maximization_step(
     new_weights = nk / nk.sum()
     new_means = (resp.T @ X) / nk.unsqueeze(1)  # (K,D)
 
-    diff = X.unsqueeze(1) - new_means.unsqueeze(0)  # (N,K,D)
+    # Only build diff where it's actually needed (tied only).
+    diff = None
+    if cov_type == "tied":
+        diff = X.unsqueeze(1) - new_means.unsqueeze(0)  # (N,K,D)
 
     if cov_type == "diag":
-        # Vectorized computation: (resp * diff^2).sum over N, then divide by nk
-        # resp: (N,K), diff: (N,K,D)
-        weighted_sq_diff = resp.unsqueeze(2) * (diff ** 2)  # (N,K,D)
-        new_cov = weighted_sq_diff.sum(dim=0) / nk.unsqueeze(1)  # (K,D)
-        new_cov = new_cov + reg_covar
+        # Use E[X^2] - E[X]^2 formula to avoid materializing diff
+        avg_X2 = (resp.T @ (X * X)) / nk.unsqueeze(1)     # (K,D)
+        avg_means2 = new_means * new_means               # (K,D)
+        new_cov = (avg_X2 - avg_means2) + reg_covar      # (K,D)
 
     elif cov_type == "spherical":
+        # Same formula as diag, then average across dimensions
         avg_X2 = (resp.T @ (X * X)) / nk.unsqueeze(1)     # (K,D)
         avg_means2 = new_means * new_means               # (K,D)
         diag_cov = (avg_X2 - avg_means2) + reg_covar      # (K,D)
         new_cov = diag_cov.mean(dim=1)                    # (K,)
 
     elif cov_type == "tied":
-        # Compute tied covariance in one einsum operation
         # sum_k sum_n resp[n,k] * diff[n,k,:] * diff[n,k,:]^T
         cov_sum = torch.einsum('nk,nkd,nke->de', resp, diff, diff)  # (D,D)
         new_cov = cov_sum / nk.sum()
         new_cov = new_cov + reg_covar * torch.eye(D, device=X.device, dtype=X.dtype)
 
     else:  # full
-        # Compute full covariance for all components in one einsum operation
-        # For each k: sum_n resp[n,k] * diff[n,k,:] * diff[n,k,:]^T / nk[k]
-        cov_sum = torch.einsum('nk,nkd,nke->kde', resp, diff, diff)  # (K,D,D)
-        new_cov = cov_sum / nk.unsqueeze(1).unsqueeze(2)  # (K,D,D)
+        # v2-better: tiled covariance update without materializing diff (N,K,D)
+        B = int(tile_B) if tile_B is not None else 64
+        if B <= 0:
+            raise ValueError(f"tile_B must be positive, got {B}")
+
+        cov_sum = torch.zeros((K, D, D), device=X.device, dtype=X.dtype)
+
+        # Precompute for normalization and reg
+        nk_ = nk.unsqueeze(1).unsqueeze(2)  # (K,1,1)
         eye = torch.eye(D, device=X.device, dtype=X.dtype)
+
+        # Tiling over feature dimensions
+        for i in range(0, D, B):
+            i2 = min(i + B, D)
+            # diff_i: (N,K,Bi) = X[:, i:i2] - new_means[:, i:i2]
+            Xi = X[:, i:i2].unsqueeze(1)                 # (N,1,Bi)
+            Mi = new_means[:, i:i2].unsqueeze(0)         # (1,K,Bi)
+            diff_i = Xi - Mi                              # (N,K,Bi)
+
+            for j in range(0, D, B):
+                j2 = min(j + B, D)
+                Xj = X[:, j:j2].unsqueeze(1)             # (N,1,Bj)
+                Mj = new_means[:, j:j2].unsqueeze(0)     # (1,K,Bj)
+                diff_j = Xj - Mj                          # (N,K,Bj)
+
+                # cov_block: (K,Bi,Bj)
+                cov_block = torch.einsum("nk,nkb,nkc->kbc", resp, diff_i, diff_j)
+                cov_sum[:, i:i2, j:j2] = cov_block
+
+        new_cov = cov_sum / nk_
         new_cov = new_cov + reg_covar * eye.unsqueeze(0)
 
     return new_means, new_cov, new_weights
