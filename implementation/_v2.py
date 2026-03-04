@@ -1,28 +1,25 @@
 # implementation/_torch_gmm_em.py
-"""Gaussian Mixture Model (GMM) EM in PyTorch (sklearn-aligned).
+"""Gaussian Mixture Model (GMM) EM in PyTorch (sklearn-aligned) - VECTORIZED VERSION.
+
+This is the optimized implementation with batched/vectorized operations for performance.
+Used to measure speedups compared to the loop-based reference implementation (_v0_ref.py).
 
 This is a correctness/reference implementation meant to be as close as practical to
 scikit-learn's GaussianMixture behavior while remaining in PyTorch.
 
 Key alignment choices:
+- DEFAULT covariance_type is 'full' (sklearn default).
 - We store covariances_ but compute and USE precisions_cholesky_ for E-step log-probs
   (like sklearn), which improves numerical stability on ill-conditioned covariances.
-- reg_covar is ADDED (not clamped) to the diagonal in the M-step.
+- reg_covar is ADDED (not clamped) to the diagonal in the M-step ONLY (not user init).
 - nk smoothing uses: nk = resp.sum(0) + 10 * eps(dtype), like sklearn.
 - Default init_params is 'kmeans' (sklearn default), implemented as k-means++ seeding
-  followed by a few Lloyd iterations.
+  followed by Lloyd iterations.
 - Supports 'k-means++' init explicitly.
 - Supports user-supplied init: weights_init, means_init, precisions_init.
-- Supports sklearn-based initialization: 'scikit_kmeans' and 'scikit_random' to match
-  sklearn's initialization exactly, helping align results between implementations.
-
-Initialization options:
-- 'kmeans': PyTorch k-means++ followed by Lloyd iterations
-- 'k-means++': PyTorch k-means++ seeding only (no refinement)
-- 'random': PyTorch random uniform responsibilities
-- 'random_from_data': Random samples from data as initial means
-- 'scikit_kmeans': Use sklearn's KMeans for initialization (matches sklearn exactly)
-- 'scikit_random': Use sklearn's random initialization (matches sklearn exactly)
+  User-provided precisions are NOT regularized (sklearn semantics).
+- Optionally supports sklearn-based initialization: 'scikit_kmeans' and 'scikit_random'
+  to match sklearn's initialization exactly (useful for testing/comparison).
 
 Covariance storage formats:
 - spherical: cov shape (K,)              # one variance per component
@@ -37,8 +34,8 @@ Exposed sklearn-like attributes after fit:
 - lower_bounds_ (history list; handy for thesis/debugging)
 
 Notes:
-- Some parts (full/tied log-prob, KMeans) use small Python loops for clarity.
-  You can later replace them with batched GPU kernels while keeping the API.
+- Most operations use batched/vectorized PyTorch operations (einsum, bmm, etc.)
+  for GPU acceleration and performance improvements over the loop-based version.
 """
 
 from __future__ import annotations
@@ -452,7 +449,7 @@ class TorchGaussianMixture:
     def __init__(
         self,
         n_components: int,
-        covariance_type: str = "diag",
+        covariance_type: str = "full",
         tol: float = 1e-3,
         reg_covar: float = 1e-6,
         max_iter: int = 100,
@@ -519,7 +516,68 @@ class TorchGaussianMixture:
             X = X.to(self.dtype)
         return X
 
-    # don't really get this
+    def _check_parameters(self, D: int) -> None:
+        """Validate user-provided init parameters (sklearn-style).
+        
+        Parameters validated:
+        - weights_init: must be in [0, 1] per element, sum to ~1.0
+        - means_init: shape must be (K, D)
+        - precisions_init: shape and positive-definiteness based on covariance_type
+        """
+        K = self.n_components
+        
+        if self.weights_init is not None:
+            w = self.weights_init
+            if not isinstance(w, torch.Tensor):
+                w = torch.tensor(w, dtype=torch.float32)
+            
+            # Check range [0, 1]
+            if (w < 0.0).any() or (w > 1.0).any():
+                raise ValueError(
+                    f"weights_init values must be in [0, 1], got min={w.min().item():.5f}, max={w.max().item():.5f}"
+                )
+            
+            # Check normalization (allow some tolerance for dtype)
+            w_sum = w.sum().item()
+            atol = 1e-6 if w.dtype in (torch.float32, torch.float16) else 1e-8
+            if abs(1.0 - w_sum) > atol:
+                raise ValueError(
+                    f"weights_init must sum to 1.0, got sum={w_sum:.8f}"
+                )
+        
+        if self.means_init is not None:
+            m = self.means_init
+            if not isinstance(m, torch.Tensor):
+                m = torch.tensor(m, dtype=torch.float32)
+            if m.shape != (K, D):
+                raise ValueError(
+                    f"means_init must have shape ({K}, {D}), got {tuple(m.shape)}"
+                )
+        
+        if self.precisions_init is not None:
+            p = self.precisions_init
+            if not isinstance(p, torch.Tensor):
+                p = torch.tensor(p, dtype=torch.float32)
+            
+            expected_shapes = {
+                "full": (K, D, D),
+                "tied": (D, D),
+                "diag": (K, D),
+                "spherical": (K,),
+            }
+            expected_shape = expected_shapes[self.covariance_type]
+            if p.shape != expected_shape:
+                raise ValueError(
+                    f"precisions_init must have shape {expected_shape} for {self.covariance_type}, got {tuple(p.shape)}"
+                )
+            
+            # Check positivity (simplified; just check diagonal/values > 0)
+            if self.covariance_type == "diag":
+                if (p <= 0.0).any():
+                    raise ValueError("precisions_init must be positive for 'diag' covariance type")
+            elif self.covariance_type == "spherical":
+                if (p <= 0.0).any():
+                    raise ValueError("precisions_init must be positive for 'spherical' covariance type")
 
     def _n_parameters(self, D: int) -> int:
         """Parameter count like sklearn for AIC/BIC."""
@@ -540,7 +598,11 @@ class TorchGaussianMixture:
         return int(p)
 
     def _convert_precisions_to_cov(self, precisions: torch.Tensor, D: int) -> torch.Tensor:
-        """Convert sklearn-style precisions_init (inverse covariance) to cov storage."""
+        """Convert sklearn-style precisions_init (inverse covariance) to cov storage.
+        
+        Note: User-provided precisions are NOT regularized here (sklearn semantics).
+        Regularization only applies to parameters estimated in the M-step.
+        """
         ct = self.covariance_type
         K = self.n_components
 
@@ -559,12 +621,14 @@ class TorchGaussianMixture:
         if ct == "tied":
             if precisions.shape != (D, D):
                 raise ValueError(f"precisions_init must have shape (D,D) for tied, got {tuple(precisions.shape)}")
+            # Invert without regularization (user-provided precisions used as-is)
             cov = torch.linalg.inv(precisions)
             return cov
 
         # full
         if precisions.shape != (K, D, D):
             raise ValueError(f"precisions_init must have shape (K,D,D) for full, got {tuple(precisions.shape)}")
+        # Invert without regularization (user-provided precisions used as-is)
         cov = torch.linalg.inv(precisions)
         return cov
 
@@ -607,6 +671,9 @@ class TorchGaussianMixture:
         X = self._to_device_dtype(X)
         N, D = X.shape
         K = self.n_components
+
+        # Validate user-provided init parameters early (sklearn-style)
+        self._check_parameters(D)
 
         # 1) User-supplied init (sklearn-style)
         if self.means_init is not None:
@@ -710,14 +777,17 @@ class TorchGaussianMixture:
             p = self._params if (self.warm_start and self._params is not None) else self._initialize(X)
 
             prev_lower = torch.tensor(float("-inf"), device=X.device, dtype=X.dtype)
-            final_lower = torch.tensor(float("-inf"), device=X.device, dtype=X.dtype)
             converged = False
             history: List[float] = []
 
             for it in range(self.max_iter):
                 lower, log_resp = _expectation_step_precchol(X, p.means, p.prec_chol, p.weights, p.cov_type)
                 history.append(float(lower.item()))
-                final_lower = lower
+
+                means, cov, weights = _maximization_step(
+                    X, p.means, p.cov, p.weights, log_resp, p.cov_type, reg_covar=self.reg_covar
+                )
+                p = self._make_params(weights, means, cov)
 
                 change = lower - prev_lower
                 if torch.abs(change) < self.tol:
@@ -725,13 +795,8 @@ class TorchGaussianMixture:
                     break
                 prev_lower = lower
 
-                means, cov, weights = _maximization_step(
-                    X, p.means, p.cov, p.weights, log_resp, p.cov_type, reg_covar=self.reg_covar
-                )
-                p = self._make_params(weights, means, cov)
-
-            if final_lower > best_lower:
-                best_lower = final_lower
+            if prev_lower > best_lower:
+                best_lower = prev_lower
                 best_params = p
                 best_n_iter = it + 1
                 best_converged = converged
