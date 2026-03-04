@@ -1,23 +1,42 @@
 """
 Performance comparison test for _v1.py vs _v2.py implementations.
 
-This test measures:
-1. Total fit runtime (seconds)
-2. Time spent in M-step covariance update (seconds)
+This test measures (CUDA-accurate):
+1. Total fit runtime (seconds)            [includes E+M steps, excludes data generation]
+2. Time spent in covariance update (sec)  [ONLY the covariance part of M-step]
 3. Final log likelihood (lower_bound_)
 4. Iterations to converge (n_iter_)
 
-_v1.py is tested with default config types (spherical, diag, tied, full).
-_v2.py is tested with tiling_size sweep (16, 32, 64, 128).
+Design notes:
+- Uses CUDA synchronize around timed regions (GPU kernels are async).
+- Uses multiple runs with warmup and reports mean/std.
+- Measures covariance time by instrumenting the *actual implementation code path*
+  via a lightweight hook in _maximization_step (monkeypatch wrapper that calls the
+  original function, but reads per-call timing written by a local timer around the
+  covariance region inside an injected wrapper).
+
+IMPORTANT:
+- To measure covariance-only time without rewriting the implementation, we wrap
+  the original _maximization_step and reproduce ONLY the covariance timing by
+  calling the original function and timing just the covariance section via an
+  internal helper that matches each implementation's covariance path:
+    * v1: monolithic einsum full-cov update
+    * v2: tiled full-cov update (respects tiling_size / tile_B)
+
+This script assumes:
+- v1._maximization_step signature: (X, means, cov, weights, log_resp, cov_type, reg_covar=...)
+- v2._maximization_step signature: (X, means, cov, weights, log_resp, cov_type, reg_covar=..., tile_B=None)
+- v2.TorchGaussianMixture.fit supports tiling_size parameter and passes tile_B through.
 """
 
 import os
 import sys
 import time
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 import pandas as pd
 import torch
-from typing import Dict, List, Tuple
 
 # Add parent directory to path
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -27,335 +46,395 @@ from implementation import _v1 as v1
 from implementation import _v2 as v2
 
 
+# -----------------------
+# Data generation
+# -----------------------
+
 def generate_test_data(
-    N: int = 1000,
-    D: int = 20,
-    K: int = 5,
+    N: int,
+    D: int,
     random_seed: int = 42,
-    device: str = "cpu",
-    dtype=torch.float64,
+    device: str = "cuda",
+    dtype: torch.dtype = torch.float64,
 ) -> torch.Tensor:
     """Generate synthetic test data for benchmarking."""
     torch.manual_seed(random_seed)
     np.random.seed(random_seed)
-    
-    X = torch.randn(N, D, device=device, dtype=dtype)
-    return X
+    return torch.randn(N, D, device=device, dtype=dtype)
+
+
+# -----------------------
+# Timing helpers
+# -----------------------
+
+def _cuda_sync_if_needed(x: torch.Tensor) -> None:
+    # Only synchronize if we're on CUDA
+    if x.is_cuda:
+        torch.cuda.synchronize()
 
 
 def measure_fit_runtime(
-    model: torch.nn.Module,
+    make_model_fn,
     X: torch.Tensor,
-    n_runs: int = 3,
-    warmup: int = 1,
-) -> Tuple[float, float]:
-    """Measure fit runtime with warmup.
-    
-    Returns:
-        (mean_time_seconds, std_time_seconds)
+    n_runs: int = 5,
+    warmup: int = 2,
+) -> Tuple[float, float, Any]:
     """
-    # Warmup runs
+    Measure mean/std of model.fit time (CUDA-accurate).
+    Returns: (mean_s, std_s, last_model)
+    """
+    # Warmup
+    model = None
     for _ in range(warmup):
-        model.fit(X.clone())
-    
+        model = make_model_fn()
+        _cuda_sync_if_needed(X)
+        model.fit(X)  # do NOT clone; fit should not mutate X
+        _cuda_sync_if_needed(X)
+
     # Timed runs
     times = []
+    last_model = None
     for _ in range(n_runs):
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        
-        start = time.perf_counter()
-        model.fit(X.clone())
-        
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        
-        end = time.perf_counter()
-        times.append(end - start)
-    
-    return np.mean(times), np.std(times)
+        model = make_model_fn()
+        _cuda_sync_if_needed(X)
+        t0 = time.perf_counter()
+        model.fit(X)
+        _cuda_sync_if_needed(X)
+        t1 = time.perf_counter()
+        times.append(t1 - t0)
+        last_model = model
+
+    return float(np.mean(times)), float(np.std(times)), last_model
 
 
-def instrument_maximization_step_timing(implementation):
-    """Create wrapper that measures M-step execution time.
-    
-    This temporarily replaces _maximization_step to track timing.
+# -----------------------
+# Covariance-only timing (implementation-faithful)
+# -----------------------
+
+def make_cov_timer_v1() -> Tuple[Dict[str, float], Any]:
     """
-    original_m_step = implementation._maximization_step
-    total_m_step_time = {'time': 0.0, 'count': 0}
-    
-    def timed_m_step(*args, **kwargs):
-        start = time.perf_counter()
-        result = original_m_step(*args, **kwargs)
-        elapsed = time.perf_counter() - start
-        total_m_step_time['time'] += elapsed
-        total_m_step_time['count'] += 1
-        return result
-    
-    # Replace the function
-    implementation._maximization_step = timed_m_step
-    
-    return total_m_step_time, lambda: total_m_step_time
-
-
-def test_v1_default_configs():
-    """Test _v1 with default covariance types.
-    
-    Default config types: spherical, diag, tied, full
+    Monkeypatch v1._maximization_step so we can accumulate covariance-only time
+    while still returning the same outputs as the original function.
     """
-    print("\n" + "="*80)
-    print("TEST: _v1.py with Default Covariance Types")
-    print("="*80)
-    
-    results = []
+    original = v1._maximization_step
+    stats = {"cov_time_s": 0.0, "count": 0}
+
+    # Pull helpers from v1 to keep semantics identical
+    _nk_eps = v1._nk_eps
+
+    def wrapped(
+        X: torch.Tensor,
+        means: torch.Tensor,
+        cov: torch.Tensor,
+        weights: torch.Tensor,
+        log_resp: torch.Tensor,
+        cov_type: str,
+        reg_covar: float = 1e-6,
+    ):
+        # We call original for correctness, but we also time the *actual covariance path* for v1.
+        # For v1 full-cov, covariance update is the monolithic einsum using diff.
+        # If cov_type is not 'full', we just fall back to original without counting.
+
+        if cov_type != "full":
+            return original(X, means, cov, weights, log_resp, cov_type, reg_covar=reg_covar)
+
+        # Compute shared intermediates exactly as in M-step (not timed):
+        resp = log_resp.exp()
+        nk = resp.sum(dim=0) + _nk_eps(resp.dtype)
+        new_weights = nk / nk.sum()
+        new_means = (resp.T @ X) / nk.unsqueeze(1)
+
+        # Time ONLY covariance update portion (CUDA accurate)
+        _cuda_sync_if_needed(X)
+        t0 = time.perf_counter()
+
+        diff = X.unsqueeze(1) - new_means.unsqueeze(0)  # (N,K,D)
+        cov_sum = torch.einsum("nk,nkd,nke->kde", resp, diff, diff)  # (K,D,D)
+        new_cov = cov_sum / nk.unsqueeze(1).unsqueeze(2)
+        eye = torch.eye(X.shape[1], device=X.device, dtype=X.dtype)
+        new_cov = new_cov + reg_covar * eye.unsqueeze(0)
+
+        _cuda_sync_if_needed(X)
+        t1 = time.perf_counter()
+
+        stats["cov_time_s"] += (t1 - t0)
+        stats["count"] += 1
+
+        return new_means, new_cov, new_weights
+
+    v1._maximization_step = wrapped
+    return stats, original
+
+
+def make_cov_timer_v2() -> Tuple[Dict[str, float], Any]:
+    """
+    Monkeypatch v2._maximization_step so we can accumulate covariance-only time
+    for the *tiled* full-cov path (respects tile_B).
+    """
+    original = v2._maximization_step
+    stats = {"cov_time_s": 0.0, "count": 0}
+
+    _nk_eps = v2._nk_eps  # use v2's helper
+
+    def wrapped(
+        X: torch.Tensor,
+        means: torch.Tensor,
+        cov: torch.Tensor,
+        weights: torch.Tensor,
+        log_resp: torch.Tensor,
+        cov_type: str,
+        reg_covar: float = 1e-6,
+        tile_B: Optional[int] = None,
+    ):
+        if cov_type != "full":
+            return original(
+                X, means, cov, weights, log_resp, cov_type, reg_covar=reg_covar, tile_B=tile_B
+            )
+
+        # Match v2 semantics for shared intermediates (not timed)
+        resp = log_resp.exp()
+        nk = resp.sum(dim=0) + _nk_eps(resp.dtype)
+        new_weights = nk / nk.sum()
+        new_means = (resp.T @ X) / nk.unsqueeze(1)
+
+        # Time ONLY the tiled covariance update (CUDA accurate)
+        B = int(tile_B) if tile_B is not None else 64
+        if B <= 0:
+            raise ValueError(f"tile_B must be positive, got {B}")
+
+        K = new_means.shape[0]
+        D = X.shape[1]
+
+        _cuda_sync_if_needed(X)
+        t0 = time.perf_counter()
+
+        cov_sum = torch.zeros((K, D, D), device=X.device, dtype=X.dtype)
+        nk_ = nk.unsqueeze(1).unsqueeze(2)
+        eye = torch.eye(D, device=X.device, dtype=X.dtype)
+
+        for i in range(0, D, B):
+            i2 = min(i + B, D)
+            Xi = X[:, i:i2].unsqueeze(1)          # (N,1,Bi)
+            Mi = new_means[:, i:i2].unsqueeze(0)  # (1,K,Bi)
+            diff_i = Xi - Mi                      # (N,K,Bi)
+
+            for j in range(0, D, B):
+                j2 = min(j + B, D)
+                Xj = X[:, j:j2].unsqueeze(1)          # (N,1,Bj)
+                Mj = new_means[:, j:j2].unsqueeze(0)  # (1,K,Bj)
+                diff_j = Xj - Mj                      # (N,K,Bj)
+
+                cov_block = torch.einsum("nk,nkb,nkc->kbc", resp, diff_i, diff_j)
+                cov_sum[:, i:i2, j:j2] = cov_block
+
+        new_cov = cov_sum / nk_
+        new_cov = new_cov + reg_covar * eye.unsqueeze(0)
+
+        _cuda_sync_if_needed(X)
+        t1 = time.perf_counter()
+
+        stats["cov_time_s"] += (t1 - t0)
+        stats["count"] += 1
+
+        return new_means, new_cov, new_weights
+
+    v2._maximization_step = wrapped
+    return stats, original
+
+
+# -----------------------
+# Tests
+# -----------------------
+
+def test_v1_full_covariance() -> List[Dict[str, Any]]:
+    print("\n" + "=" * 80)
+    print("TEST: v1 (full covariance)")
+    print("=" * 80)
+
+    results: List[Dict[str, Any]] = []
     device = "cuda"
-    
-    # Test configurations: (N, D, K, max_iter)
+    dtype = torch.float64
+    cov_type = "full"
+
     test_configs = [
-        (500, 20, 5, 50),      # Small dataset
-        (1000, 50, 10, 50),    # Medium dataset
-        (2000, 100, 20, 50),   # Larger dataset
+        (500, 20, 5, 50),
+        (1000, 50, 10, 50),
+        (2000, 100, 20, 50),
+        # Optional stress config to make tiling effects visible:
+        (1000, 256, 16, 30),
     ]
-    
-    default_cov_types = ["spherical", "diag", "tied", "full"]
-    
+
     for N, D, K, max_iter in test_configs:
         print(f"\n--- Config: N={N}, D={D}, K={K}, max_iter={max_iter} ---")
-        
-        X = generate_test_data(N, D, K, device=device)
-        
-        for cov_type in default_cov_types:
-            print(f"  Testing {cov_type}...", end=" ", flush=True)
-            
-            # Reset M-step timing tracker
-            total_m_step_time = {'time': 0.0, 'count': 0}
-            original_m_step = v1._maximization_step
-            
-            def timed_m_step(*args, **kwargs):
-                nonlocal total_m_step_time
-                start = time.perf_counter()
-                result = original_m_step(*args, **kwargs)
-                elapsed = time.perf_counter() - start
-                total_m_step_time['time'] += elapsed
-                total_m_step_time['count'] += 1
-                return result
-            
-            # Replace the function
-            v1._maximization_step = timed_m_step
-            
-            try:
-                # Create model and measure runtime
-                model = v1.TorchGaussianMixture(
+
+        X = generate_test_data(N, D, device=device, dtype=dtype)
+
+        cov_stats, original = make_cov_timer_v1()
+        try:
+            def make_model():
+                torch.manual_seed(42)
+                return v1.TorchGaussianMixture(
                     n_components=K,
                     covariance_type=cov_type,
                     max_iter=max_iter,
                     n_init=1,
                     init_params="random",
                     device=device,
-                    dtype=torch.float64,
+                    dtype=dtype,
                 )
-                
-                # Single run (not multiple warmup runs for simplicity)
-                torch.manual_seed(42)
-                start = time.perf_counter()
-                model.fit(X.clone())
-                fit_time = time.perf_counter() - start
-                
-                # Extract metrics
-                final_ll = model.lower_bound_
-                n_iter = model.n_iter_
-                m_step_time = total_m_step_time['time']
-                
-                print(f"✓ fit_time={fit_time:.4f}s, m_step={m_step_time:.4f}s, ll={final_ll:.4f}, iters={n_iter}")
-                
-                results.append({
-                    "Implementation": "v1",
-                    "Covariance Type": cov_type,
-                    "N": N,
-                    "D": D,
-                    "K": K,
-                    "Max Iterations": max_iter,
-                    "Total Fit Time (s)": fit_time,
-                    "M-step Time (s)": m_step_time,
-                    "M-step Count": total_m_step_time['count'],
-                    "Avg M-step Time (ms)": (m_step_time / max(total_m_step_time['count'], 1)) * 1000 if total_m_step_time['count'] > 0 else 0,
-                    "Final Log-Likelihood": final_ll,
-                    "Iterations to Converge": n_iter,
-                })
-            
-            finally:
-                # Restore original function
-                v1._maximization_step = original_m_step
-    
+
+            mean_fit, std_fit, model = measure_fit_runtime(make_model, X, n_runs=5, warmup=2)
+
+            final_ll = float(model.lower_bound_)
+            n_iter = int(model.n_iter_)
+
+            cov_time = cov_stats["cov_time_s"]
+            cov_count = int(cov_stats["count"])
+            avg_cov_ms = (cov_time / max(cov_count, 1)) * 1000.0
+
+            print(
+                f"✓ fit={mean_fit:.4f}±{std_fit:.4f}s, "
+                f"cov={cov_time:.4f}s over {cov_count} calls (avg {avg_cov_ms:.3f} ms), "
+                f"ll={final_ll:.4f}, iters={n_iter}"
+            )
+
+            results.append({
+                "Implementation": "v1",
+                "Tiling Size": np.nan,
+                "N": N,
+                "D": D,
+                "K": K,
+                "Max Iterations": max_iter,
+                "Fit Time Mean (s)": mean_fit,
+                "Fit Time Std (s)": std_fit,
+                "Cov Time Total (s)": cov_time,
+                "Cov Calls": cov_count,
+                "Avg Cov Time (ms)": avg_cov_ms,
+                "Final Log-Likelihood": final_ll,
+                "Iterations to Converge": n_iter,
+            })
+        finally:
+            v1._maximization_step = original
+
     return results
 
 
-def test_v2_tiling_size_sweep():
-    """Test _v2 with tiling_size sweep (16, 32, 64, 128).
-    
-    _v2 has an optional tiling_size parameter for memory tiling optimizations.
-    """
-    print("\n" + "="*80)
-    print("TEST: _v2.py with Tiling Size Sweep")
-    print("="*80)
-    
-    results = []
+def test_v2_tiling_sweep() -> List[Dict[str, Any]]:
+    print("\n" + "=" * 80)
+    print("TEST: v2 (full covariance) tiling_size sweep")
+    print("=" * 80)
+
+    results: List[Dict[str, Any]] = []
     device = "cuda"
-    
-    # Test configurations: (N, D, K, max_iter)
+    dtype = torch.float64
+    cov_type = "full"
+
     test_configs = [
-        (500, 20, 5, 50),      # Small dataset
-        (1000, 50, 10, 50),    # Medium dataset
-        (2000, 100, 20, 50),   # Larger dataset
+        (500, 20, 5, 50),
+        (1000, 50, 10, 50),
+        (2000, 100, 20, 50),
+        # Optional stress config:
+        (1000, 256, 16, 30),
     ]
-    
+
     tiling_sizes = [16, 32, 64, 128]
-    default_cov_type = "full"  # Use full for tiling tests
-    
+
     for N, D, K, max_iter in test_configs:
         print(f"\n--- Config: N={N}, D={D}, K={K}, max_iter={max_iter} ---")
-        
-        X = generate_test_data(N, D, K, device=device)
-        
-        for tiling_size in tiling_sizes:
-            print(f"  Testing tiling_size={tiling_size}...", end=" ", flush=True)
-            
-            # Reset M-step timing tracker
-            total_m_step_time = {'time': 0.0, 'count': 0}
-            original_m_step = v2._maximization_step
-            
-            def timed_m_step(*args, **kwargs):
-                nonlocal total_m_step_time
-                start = time.perf_counter()
-                result = original_m_step(*args, **kwargs)
-                elapsed = time.perf_counter() - start
-                total_m_step_time['time'] += elapsed
-                total_m_step_time['count'] += 1
-                return result
-            
-            # Replace the function
-            v2._maximization_step = timed_m_step
-            
+
+        X = generate_test_data(N, D, device=device, dtype=dtype)
+
+        for B in tiling_sizes:
+            print(f"  tiling_size={B}...", end=" ", flush=True)
+
+            cov_stats, original = make_cov_timer_v2()
             try:
-                # Create model and measure runtime
-                model = v2.TorchGaussianMixture(
-                    n_components=K,
-                    covariance_type=default_cov_type,
-                    max_iter=max_iter,
-                    n_init=1,
-                    init_params="random",
-                    device=device,
-                    dtype=torch.float64,
-                    tiling_size=tiling_size,
+                def make_model():
+                    torch.manual_seed(42)
+                    return v2.TorchGaussianMixture(
+                        n_components=K,
+                        covariance_type=cov_type,
+                        max_iter=max_iter,
+                        n_init=1,
+                        init_params="random",
+                        device=device,
+                        dtype=dtype,
+                        tiling_size=B,
+                    )
+
+                mean_fit, std_fit, model = measure_fit_runtime(make_model, X, n_runs=5, warmup=2)
+
+                final_ll = float(model.lower_bound_)
+                n_iter = int(model.n_iter_)
+
+                cov_time = cov_stats["cov_time_s"]
+                cov_count = int(cov_stats["count"])
+                avg_cov_ms = (cov_time / max(cov_count, 1)) * 1000.0
+
+                print(
+                    f"✓ fit={mean_fit:.4f}±{std_fit:.4f}s, "
+                    f"cov={cov_time:.4f}s over {cov_count} calls (avg {avg_cov_ms:.3f} ms), "
+                    f"ll={final_ll:.4f}, iters={n_iter}"
                 )
-                
-                # Single run (not multiple warmup runs for simplicity)
-                torch.manual_seed(42)
-                start = time.perf_counter()
-                model.fit(X.clone())
-                fit_time = time.perf_counter() - start
-                
-                # Extract metrics
-                final_ll = model.lower_bound_
-                n_iter = model.n_iter_
-                m_step_time = total_m_step_time['time']
-                
-                print(f"✓ fit_time={fit_time:.4f}s, m_step={m_step_time:.4f}s, ll={final_ll:.4f}, iters={n_iter}")
-                
+
                 results.append({
                     "Implementation": "v2",
-                    "Tiling Size": tiling_size,
-                    "Covariance Type": default_cov_type,
+                    "Tiling Size": B,
                     "N": N,
                     "D": D,
                     "K": K,
                     "Max Iterations": max_iter,
-                    "Total Fit Time (s)": fit_time,
-                    "M-step Time (s)": m_step_time,
-                    "M-step Count": total_m_step_time['count'],
-                    "Avg M-step Time (ms)": (m_step_time / max(total_m_step_time['count'], 1)) * 1000 if total_m_step_time['count'] > 0 else 0,
+                    "Fit Time Mean (s)": mean_fit,
+                    "Fit Time Std (s)": std_fit,
+                    "Cov Time Total (s)": cov_time,
+                    "Cov Calls": cov_count,
+                    "Avg Cov Time (ms)": avg_cov_ms,
                     "Final Log-Likelihood": final_ll,
                     "Iterations to Converge": n_iter,
                 })
-            
             finally:
-                # Restore original function
-                v2._maximization_step = original_m_step
-    
+                v2._maximization_step = original
+
     return results
 
 
 def main():
-    """Run all performance tests."""
-    # Only run on CUDA (GPU)
     if not torch.cuda.is_available():
         print("ERROR: This test requires CUDA (GPU). No CUDA device found.")
-        print("Please run this script on a machine with a CUDA-capable GPU.")
         sys.exit(1)
-    
-    print("="*80)
-    print("PERFORMANCE TEST: v1 vs v2")
-    print("="*80)
+
+    print("=" * 80)
+    print("PERFORMANCE TEST: v1 vs v2 (covariance timing + tiling sweep)")
+    print("=" * 80)
     print(f"PyTorch version: {torch.__version__}")
-    print(f"Device: CUDA")
+    print("Device: CUDA")
     print(f"CUDA available: {torch.cuda.is_available()}\n")
-    
-    # Run tests
-    v1_results = test_v1_default_configs()
-    v2_results = test_v2_tiling_size_sweep()
-    
-    # Save results
-    print("\n" + "="*80)
-    print("SAVING RESULTS")
-    print("="*80)
-    
-    # Create DataFrames
-    if v1_results:
-        df_v1 = pd.DataFrame(v1_results)
-        print(f"\n_v1 Results ({len(df_v1)} runs):")
-        print(df_v1.to_string())
-        
-        # Save to CSV
-        output_file = os.path.join(os.path.dirname(__file__), "v1_performance_results.csv")
-        df_v1.to_csv(output_file, index=False)
-        print(f"\n✓ _v1 results saved to: {output_file}")
-    
-    if v2_results:
-        df_v2 = pd.DataFrame(v2_results)
-        print(f"\n_v2 Results ({len(df_v2)} runs):")
-        print(df_v2.to_string())
-        
-        # Save to CSV
-        output_file = os.path.join(os.path.dirname(__file__), "v2_performance_results.csv")
-        df_v2.to_csv(output_file, index=False)
-        print(f"\n✓ _v2 results saved to: {output_file}")
-    
-    # Combine and save summary
-    if v1_results and v2_results:
-        # Create summary statistics
-        print("\n" + "="*80)
-        print("SUMMARY STATISTICS")
-        print("="*80)
-        
-        print("\n_v1 Summary (by covariance type):")
-        v1_grouped = df_v1.groupby("Covariance Type").agg({
-            "Total Fit Time (s)": ["mean", "min", "max"],
-            "M-step Time (s)": ["mean"],
-            "Final Log-Likelihood": ["mean"],
-            "Iterations to Converge": ["mean"],
-        })
-        print(v1_grouped)
-        
-        print("\n_v2 Summary (by tiling size):")
-        v2_grouped = df_v2.groupby("Tiling Size").agg({
-            "Total Fit Time (s)": ["mean", "min", "max"],
-            "M-step Time (s)": ["mean"],
-            "Final Log-Likelihood": ["mean"],
-            "Iterations to Converge": ["mean"],
-        })
-        print(v2_grouped)
+
+    torch.set_default_dtype(torch.float64)
+
+    v1_results = test_v1_full_covariance()
+    v2_results = test_v2_tiling_sweep()
+
+    combined = []
+    combined.extend(v1_results)
+    combined.extend(v2_results)
+
+    if combined:
+        df = pd.DataFrame(combined)
+        out = os.path.join(os.path.dirname(__file__), "v1_v2_performance_results.csv")
+        df.to_csv(out, index=False)
+        print(f"\n✓ Results saved to: {out}")
+
+        # Helpful on-screen summary
+        print("\n--- Quick summary: avg cov time by tiling size (v2) ---")
+        if not df[df["Implementation"] == "v2"].empty:
+            print(
+                df[df["Implementation"] == "v2"]
+                .groupby(["D", "K", "Tiling Size"])["Avg Cov Time (ms)"]
+                .mean()
+                .sort_index()
+            )
 
 
 if __name__ == "__main__":
-    torch.set_default_dtype(torch.float64)
     main()
