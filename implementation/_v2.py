@@ -329,9 +329,9 @@ def _maximization_step(
         new_cov = new_cov + reg_covar * torch.eye(D, device=X.device, dtype=X.dtype)
 
     else:  # full
-        # v2: tiled covariance update without materializing diff (N,K,D)
-        # + upper-triangular tiling (exploit symmetry): compute only j>=i blocks,
-        #   then mirror to fill lower triangle.
+    # v2: tiled covariance update without materializing diff (N,K,D)
+    # + upper-triangular tiling (exploit symmetry)
+    # + tile reuse: precompute diff tiles once per M-step to avoid re-creating diff_j
         B = int(tile_B) if tile_B is not None else 64
         if B <= 0:
             raise ValueError(f"tile_B must be positive, got {B}")
@@ -340,30 +340,33 @@ def _maximization_step(
         nk_ = nk.unsqueeze(1).unsqueeze(2)  # (K,1,1)
         eye = torch.eye(D, device=X.device, dtype=X.dtype)
 
-        # Tiling over feature dimensions
-        for i in range(0, D, B):
-            i2 = min(i + B, D)
+        # Precompute all diff tiles once (j-tiles), then reuse them.
+        # Each entry is (N,K,Bj) for that tile range.
+        diff_tiles = []
+        tile_ranges = []
+        for t in range(0, D, B):
+            t2 = min(t + B, D)
+            Xt = X[:, t:t2].unsqueeze(1)              # (N,1,Bt)
+            Mt = new_means[:, t:t2].unsqueeze(0)      # (1,K,Bt)
+            diff_tiles.append(Xt - Mt)                # (N,K,Bt)
+            tile_ranges.append((t, t2))
 
-            # diff_i: (N,K,Bi) = X[:, i:i2] - new_means[:, i:i2]
-            Xi = X[:, i:i2].unsqueeze(1)            # (N,1,Bi)
-            Mi = new_means[:, i:i2].unsqueeze(0)    # (1,K,Bi)
-            diff_i = Xi - Mi                         # (N,K,Bi)
+        n_tiles = len(diff_tiles)
 
-            # Upper-triangular: j starts at i
-            for j in range(i, D, B):
-                j2 = min(j + B, D)
+        # Upper-triangular over tiles
+        for ti in range(n_tiles):
+            i, i2 = tile_ranges[ti]
+            diff_i = diff_tiles[ti]  # (N,K,Bi)
 
-                # diff_j: (N,K,Bj)
-                Xj = X[:, j:j2].unsqueeze(1)         # (N,1,Bj)
-                Mj = new_means[:, j:j2].unsqueeze(0) # (1,K,Bj)
-                diff_j = Xj - Mj                      # (N,K,Bj)
+            for tj in range(ti, n_tiles):
+                j, j2 = tile_ranges[tj]
+                diff_j = diff_tiles[tj]  # (N,K,Bj)
 
-                # cov_block: (K,Bi,Bj) where block corresponds to [i:i2, j:j2]
+                # cov_block: (K,Bi,Bj)
                 cov_block = torch.einsum("nk,nkb,nkc->kbc", resp, diff_i, diff_j)
 
                 cov_sum[:, i:i2, j:j2] = cov_block
-                if j != i:
-                    # Mirror into lower triangle: [j:j2, i:i2] = cov_block^T
+                if tj != ti:
                     cov_sum[:, j:j2, i:i2] = cov_block.transpose(-1, -2)
 
         new_cov = cov_sum / nk_
