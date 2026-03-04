@@ -206,6 +206,32 @@ def run_single_experiment(
         initial_ll = model.score(X).item()
         print(f"  Initial shared log-likelihood: {initial_ll:.6f}")
 
+    # ---- Warmup: prime CUDA kernels before timing ----
+    if model_class == TorchGaussianMixture_v1:
+        _warmup = model_class(
+            n_components=n_components,
+            covariance_type=covariance_type,
+            max_iter=5,
+            n_init=1,
+            init_params="kmeans",
+            device=X.device,
+            dtype=X.dtype,
+        )
+    else:
+        _warmup = model_class(
+            n_components=n_components,
+            covariance_type=covariance_type,
+            max_iter=5,
+            n_init=1,
+            init_params="kmeans",
+            covariance_update_frequency=covariance_update_frequency,
+            device=X.device,
+            dtype=X.dtype,
+        )
+    _warmup.fit(X)
+    torch.cuda.synchronize()
+    del _warmup
+
     # ---- Timing with CUDA events ----
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
