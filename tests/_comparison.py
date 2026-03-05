@@ -86,58 +86,84 @@ def _sk_init_params_from_means(X_np, means_np, cov_type, reg_covar=1e-6):
 SEED_ESTEP = np.random.randint(1, 1001)
 SEED_MSTEP = np.random.randint(1, 1001)
 SEED_E2E   = np.random.randint(1, 1001)
+SEED_V2R   = np.random.randint(1, 1001)
 
 
 # ───────────────────────────────────────────────────────────────────────────
 # Test 1: E-step correctness
 # ───────────────────────────────────────────────────────────────────────────
 
-def _run_e_step_test(label, estimate_log_prob_fn, expectation_step_fn, compute_prec_chol_fn):
-    """
-    Compare a single implementation's E-step functions against sklearn.
-    Uses diag covariance for simplicity (avoids full-cov edge cases).
-    """
-    np.random.seed(SEED_ESTEP)
-    N, D, K = 100, 5, 3
+def _make_spd(rng, size):
+    """Random symmetric positive definite matrix of shape (size, size)."""
+    A = rng.randn(size, size)
+    return (A @ A.T + size * np.eye(size)).astype(np.float64)
 
+
+def _build_cov_and_prec_chol(rng, cov_type, K, D):
+    """
+    Build a random covariance tensor and the corresponding precisions_chol
+    in sklearn's expected format for each covariance type.
+
+    Returns (cov_np, prec_chol_np) as numpy arrays.
+    """
+    if cov_type == "spherical":
+        cov_np = rng.uniform(0.5, 2.0, K).astype(np.float64)          # (K,)
+        prec_chol_np = 1.0 / np.sqrt(cov_np)                           # (K,)
+
+    elif cov_type == "diag":
+        cov_np = rng.uniform(0.5, 2.0, (K, D)).astype(np.float64)      # (K, D)
+        prec_chol_np = 1.0 / np.sqrt(cov_np)                           # (K, D)
+
+    elif cov_type == "tied":
+        cov_np = _make_spd(rng, D)                                      # (D, D)
+        prec_np = np.linalg.inv(cov_np)
+        prec_chol_np = np.linalg.cholesky(prec_np)                     # (D, D) lower-tri
+
+    else:  # full
+        cov_np = np.stack([_make_spd(rng, D) for _ in range(K)])       # (K, D, D)
+        prec_chol_np = np.stack([
+            np.linalg.cholesky(np.linalg.inv(cov_np[k])) for k in range(K)
+        ])                                                               # (K, D, D) lower-tri
+
+    return cov_np, prec_chol_np
+
+
+def _run_e_step_test_for_cov_type(cov_type, label, lp_fn, estep_fn, compute_prec_fn):
+    """Compare one implementation's E-step against sklearn for a given covariance type."""
     rng = np.random.RandomState(SEED_ESTEP)
-    X_np = rng.randn(N, D).astype(np.float64)
-    X_t  = torch.from_numpy(X_np)
+    N, D, K = 200, 5, 3
 
+    X_np     = rng.randn(N, D).astype(np.float64)
+    X_t      = torch.from_numpy(X_np)
     means_np = rng.randn(K, D).astype(np.float64)
     means_t  = torch.from_numpy(means_np)
 
-    weights_np = np.ones(K) / K
+    # Random mixture weights
+    weights_np = rng.dirichlet(np.ones(K))
     weights_t  = torch.from_numpy(weights_np)
 
-    # Diagonal covariance: var > 0 (randomized scale, always positive)
-    cov_np      = np.tile(rng.uniform(0.5, 2.0, D).astype(np.float64), (K, 1))  # (K, D)
-    prec_chol_np = 1.0 / np.sqrt(cov_np)
+    cov_np, prec_chol_np = _build_cov_and_prec_chol(rng, cov_type, K, D)
+    cov_t = torch.from_numpy(cov_np)
 
     # sklearn reference
-    sk_log_prob = _sk_estimate_log_gaussian_prob(X_np, means_np, prec_chol_np, "diag")
-
+    sk_log_prob    = _sk_estimate_log_gaussian_prob(X_np, means_np, prec_chol_np, cov_type)
     sk_resp_unnorm = sk_log_prob + np.log(weights_np)[None, :]
     sk_log_norm    = np.logaddexp.reduce(sk_resp_unnorm, axis=1, keepdims=True)
     sk_resp        = np.exp(sk_resp_unnorm - sk_log_norm)
 
     # PyTorch implementation
-    cov_t      = torch.from_numpy(cov_np)
-    prec_chol_t = compute_prec_chol_fn(cov_t, "diag")
-    torch_log_prob = estimate_log_prob_fn(X_t, means_t, prec_chol_t, "diag").cpu().numpy()
-
-    _, log_resp_t = expectation_step_fn(X_t, means_t, prec_chol_t, weights_t, "diag")
-    torch_resp = log_resp_t.exp().cpu().numpy()
+    prec_chol_t    = compute_prec_fn(cov_t, cov_type)
+    torch_log_prob = lp_fn(X_t, means_t, prec_chol_t, cov_type).cpu().numpy()
+    _, log_resp_t  = estep_fn(X_t, means_t, prec_chol_t, weights_t, cov_type)
+    torch_resp     = log_resp_t.exp().cpu().numpy()
 
     max_lp_diff   = np.max(np.abs(sk_log_prob - torch_log_prob))
     max_resp_diff = np.max(np.abs(sk_resp - torch_resp))
 
-    print(f"  log-prob diff (max):  {max_lp_diff:.2e}")
-    print(f"  responsibility diff:  {max_resp_diff:.2e}")
-
-    assert max_lp_diff   < 1e-10, f"[{label}] log-prob mismatch: {max_lp_diff}"
-    assert max_resp_diff < 1e-10, f"[{label}] responsibility mismatch: {max_resp_diff}"
-    print(f"  PASSED")
+    print(f"    {cov_type:<10}  log-prob diff: {max_lp_diff:.2e}  resp diff: {max_resp_diff:.2e}", end="")
+    assert max_lp_diff   < 1e-10, f"[{label}/{cov_type}] log-prob mismatch: {max_lp_diff}"
+    assert max_resp_diff < 1e-10, f"[{label}/{cov_type}] resp mismatch: {max_resp_diff}"
+    print("  ok")
 
 
 def test_e_step_correctness():
@@ -152,24 +178,25 @@ def test_e_step_correctness():
         ("_v1",        v1._estimate_log_gaussian_prob_precchol,
                        v1._expectation_step_precchol,
                        v1._compute_precisions_cholesky),
-        # _v2_reduced imports v1's functions so no separate test needed;
-        # _v2_tiling has its own implementation:
+        # _v2_reduced reuses v1's functions; _v2_tiling has its own:
         ("_v2_tiling", v2t._estimate_log_gaussian_prob_precchol,
                        v2t._expectation_step_precchol,
                        v2t._compute_precisions_cholesky),
     ]
     for label, lp_fn, estep_fn, prec_fn in impls:
         print(f"\n  [{label}]")
-        _run_e_step_test(label, lp_fn, estep_fn, prec_fn)
+        for cov_type in ("spherical", "diag", "tied", "full"):
+            _run_e_step_test_for_cov_type(cov_type, label, lp_fn, estep_fn, prec_fn)
 
-    print("\n+ E-step correctness PASSED for all implementations\n")
+    print("\n+ E-step correctness PASSED for all implementations and covariance types\n")
 
 
 # ───────────────────────────────────────────────────────────────────────────
 # Test 2: M-step correctness
 # ───────────────────────────────────────────────────────────────────────────
 
-def _run_m_step_test(label, maximization_step_fn):
+def _run_m_step_test_for_cov_type(cov_type, label, mstep_fn):
+    """Compare one implementation's M-step against sklearn for a given covariance type."""
     rng = np.random.RandomState(SEED_MSTEP)
     N, D, K = 100, 5, 3
 
@@ -178,22 +205,28 @@ def _run_m_step_test(label, maximization_step_fn):
 
     resp_np = rng.uniform(0, 1, (N, K)).astype(np.float64)
     resp_np /= resp_np.sum(axis=1, keepdims=True)
-    resp_t     = torch.from_numpy(resp_np)
-    log_resp_t = torch.log(resp_t)
+    log_resp_t = torch.from_numpy(np.log(resp_np))
 
     # sklearn M-step reference
     sk_norms, sk_means, sk_cov = _sk_estimate_gaussian_parameters(
-        X_np, resp_np, reg_covar=1e-6, covariance_type="diag"
+        X_np, resp_np, reg_covar=1e-6, covariance_type=cov_type
     )
     sk_weights = sk_norms / sk_norms.sum()
 
-    # PyTorch M-step (dummy starting params — not used by diag/spherical paths)
+    # Dummy initial params for PyTorch — shapes must match cov_type
     means0   = torch.from_numpy(rng.randn(K, D).astype(np.float64))
-    cov0     = torch.ones((K, D), dtype=torch.float64)
     weights0 = torch.full((K,), 1.0 / K, dtype=torch.float64)
+    if cov_type == "spherical":
+        cov0 = torch.ones(K, dtype=torch.float64)
+    elif cov_type == "diag":
+        cov0 = torch.ones(K, D, dtype=torch.float64)
+    elif cov_type == "tied":
+        cov0 = torch.eye(D, dtype=torch.float64)
+    else:  # full
+        cov0 = torch.eye(D, dtype=torch.float64).unsqueeze(0).expand(K, D, D).contiguous()
 
-    torch_means, torch_cov, torch_weights = maximization_step_fn(
-        X_t, means0, cov0, weights0, log_resp_t, "diag", reg_covar=1e-6
+    torch_means, torch_cov, torch_weights = mstep_fn(
+        X_t, means0, cov0, weights0, log_resp_t, cov_type, reg_covar=1e-6
     )
     torch_means   = torch_means.cpu().numpy()
     torch_cov     = torch_cov.cpu().numpy()
@@ -203,14 +236,15 @@ def _run_m_step_test(label, maximization_step_fn):
     max_cov_diff     = np.max(np.abs(sk_cov     - torch_cov))
     max_weights_diff = np.max(np.abs(sk_weights - torch_weights))
 
-    print(f"  means diff (max):   {max_means_diff:.2e}")
-    print(f"  cov diff (max):     {max_cov_diff:.2e}")
-    print(f"  weights diff (max): {max_weights_diff:.2e}")
-
-    assert max_means_diff   < 1e-10, f"[{label}] means mismatch: {max_means_diff}"
-    assert max_cov_diff     < 1e-10, f"[{label}] cov mismatch: {max_cov_diff}"
-    assert max_weights_diff < 1e-10, f"[{label}] weights mismatch: {max_weights_diff}"
-    print(f"  PASSED")
+    print(
+        f"    {cov_type:<10}  means: {max_means_diff:.2e}"
+        f"  cov: {max_cov_diff:.2e}  weights: {max_weights_diff:.2e}",
+        end="",
+    )
+    assert max_means_diff   < 1e-10, f"[{label}/{cov_type}] means mismatch: {max_means_diff}"
+    assert max_cov_diff     < 1e-10, f"[{label}/{cov_type}] cov mismatch: {max_cov_diff}"
+    assert max_weights_diff < 1e-10, f"[{label}/{cov_type}] weights mismatch: {max_weights_diff}"
+    print("  ok")
 
 
 def test_m_step_correctness():
@@ -226,9 +260,10 @@ def test_m_step_correctness():
     ]
     for label, mstep_fn in impls:
         print(f"\n  [{label}]")
-        _run_m_step_test(label, mstep_fn)
+        for cov_type in ("spherical", "diag", "tied", "full"):
+            _run_m_step_test_for_cov_type(cov_type, label, mstep_fn)
 
-    print("\n+ M-step correctness PASSED for all implementations\n")
+    print("\n+ M-step correctness PASSED for all implementations and covariance types\n")
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -400,11 +435,100 @@ def test_end_to_end():
 
 
 # ───────────────────────────────────────────────────────────────────────────
+# Test 4: _v2_reduced covariance throttling
+# ───────────────────────────────────────────────────────────────────────────
+
+def test_v2_reduced_throttling():
+    """
+    Test _v2_reduced with covariance_update_frequency > 1.
+
+    When covariances are updated only every N iterations, the M-step is
+    incomplete and EM monotonicity is NOT guaranteed — this is a known
+    trade-off of the variant. This test checks that:
+      (a) The model still converges to a reasonable LL (within a loose
+          factor of the full-update baseline).
+      (b) The throttled path executes without numerical failure.
+      (c) Monotonicity violations, if any, are reported (informational).
+
+    Uses 'full' covariance (most expensive, most benefit from throttling).
+    """
+    print("=" * 80)
+    print(f"TEST 4: _v2_reduced Covariance Throttling  (seed={SEED_V2R})")
+    print("=" * 80)
+
+    rng = np.random.RandomState(SEED_V2R)
+    N, D, K = 300, 8, 4
+    COV_TYPE  = "full"
+    REG_COVAR = 1e-6
+    MAX_ITER  = 300
+    TOL       = 1e-4
+
+    X_np = rng.randn(N, D).astype(np.float64)
+    X_t  = torch.from_numpy(X_np)
+
+    # Shared KMeans init
+    km = KMeans(n_clusters=K, n_init=1, random_state=SEED_V2R).fit(X_np)
+    init_means_np = km.cluster_centers_.astype(np.float64)
+    init_prec_np  = _sk_init_params_from_means(X_np, init_means_np, COV_TYPE, REG_COVAR)
+    init_means_t  = torch.from_numpy(init_means_np)
+    init_prec_t   = torch.from_numpy(init_prec_np)
+
+    def make_gmm(freq):
+        return v2r.TorchGaussianMixture(
+            n_components=K,
+            covariance_type=COV_TYPE,
+            reg_covar=REG_COVAR,
+            max_iter=MAX_ITER,
+            tol=TOL,
+            n_init=1,
+            device=None,
+            dtype=torch.float64,
+            means_init=init_means_t.clone(),
+            precisions_init=init_prec_t.clone(),
+            covariance_update_frequency=freq,
+        ).fit(X_t)
+
+    # Baseline: full covariance updates (freq=1, identical to _v1)
+    gmm_f1 = make_gmm(1)
+    ref_ll  = gmm_f1.lower_bound_
+
+    print(f"\n  {'freq':<6} {'lower_bound':>14} {'ll_diff vs f=1':>16} {'monotone':>9} {'iter':>6}")
+    print(f"  {1:<6} {ref_ll:>14.6f} {'(reference)':>16} {'yes':>9} {gmm_f1.n_iter_:>6}")
+
+    failed = []
+    for freq in [2, 3, 5]:
+        gmm     = make_gmm(freq)
+        ll      = gmm.lower_bound_
+        diff    = ll - ref_ll
+        history = gmm.lower_bounds_
+        h_diffs = np.diff(history)
+        monotone    = bool(np.all(h_diffs >= -1e-8))
+        worst_drop  = float(np.min(h_diffs)) if len(h_diffs) > 0 else 0.0
+
+        monotone_str = "yes" if monotone else f"NO ({worst_drop:.1e})"
+        print(f"  {freq:<6} {ll:>14.6f} {diff:>+16.2e} {monotone_str:>9} {gmm.n_iter_:>6}")
+
+        # Numerical sanity: LL must be finite and not catastrophically worse
+        if not np.isfinite(ll):
+            failed.append(f"freq={freq}: LL is not finite ({ll})")
+        elif diff < -0.5 * abs(ref_ll):
+            failed.append(f"freq={freq}: LL worse than freq=1 by {-diff:.2e} (>50% of |ref|)")
+
+    if failed:
+        for msg in failed:
+            print(f"  FAIL: {msg}")
+        raise AssertionError("Throttling test failures:\n" + "\n".join(failed))
+
+    print("\n+ _v2_reduced throttling PASSED\n")
+
+
+# ───────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     test_e_step_correctness()
     test_m_step_correctness()
     test_end_to_end()
+    test_v2_reduced_throttling()
 
     print("=" * 80)
     print("ALL TESTS PASSED")
