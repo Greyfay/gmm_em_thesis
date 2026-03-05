@@ -365,7 +365,7 @@ def main():
     _print_table(all_rows)
 
     df = pd.DataFrame(all_rows)
-    output_path = os.path.join(os.path.dirname(__file__), "estep_benchmark.csv")
+    output_path = os.path.join(os.path.dirname(__file__), "scaling_n_v1_v0.csv")
     df.to_csv(output_path, index=False)
     print(df.to_csv(index=False), end="")
     print(f"CSV saved to: {output_path}", file=sys.stderr, flush=True)
