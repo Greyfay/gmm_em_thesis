@@ -72,8 +72,10 @@ def main():
 
     rows = []
 
-    for N in N_VALUES:
+    for i, N in enumerate(N_VALUES):
+        print(f"[{i+1}/{len(N_VALUES)}] N={N:,} — generating datasets...", file=sys.stderr, flush=True)
         datasets = make_datasets(N, rng)
+        print(f"[{i+1}/{len(N_VALUES)}] N={N:,} — running benchmarks...", file=sys.stderr, flush=True)
 
         # One warmup iteration on the first dataset (untimed)
         ds0 = datasets[0]
@@ -114,6 +116,7 @@ def main():
             )
             v1_times.append((time.perf_counter() - t0) * 1e3)
 
+        print(f"[{i+1}/{len(N_VALUES)}] N={N:,} — done.", file=sys.stderr, flush=True)
         rows.append({
             "N": N,
             "D": D,
@@ -130,6 +133,7 @@ def main():
     output_path = os.path.join(os.path.dirname(__file__), "estep_benchmark.csv")
     df.to_csv(output_path, index=False)
     print(df.to_csv(index=False), end="")
+    print(f"CSV saved to: {output_path}", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":
