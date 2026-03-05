@@ -285,7 +285,7 @@ def _maximization_step(
     weights: torch.Tensor,
     log_resp: torch.Tensor,
     cov_type: str,
-    reg_covar: float = 1e-6,
+    reg_covar: float = 1e-4,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """M-step (sklearn-style) producing updated means/cov/weights."""
     _check_cov_type(cov_type)
@@ -453,7 +453,7 @@ class TorchGaussianMixture:
         n_components: int,
         covariance_type: str = "full",
         tol: float = 1e-3,
-        reg_covar: float = 1e-6,
+        reg_covar: float = 1e-4,
         max_iter: int = 100,
         n_init: int = 1,
         init_params: str = "kmeans",

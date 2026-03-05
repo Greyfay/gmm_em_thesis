@@ -493,7 +493,7 @@ class TorchGaussianMixture:
         n_components: int,
         covariance_type: str = "full",
         tol: float = 1e-3,
-        reg_covar: float = 1e-6,
+        reg_covar: float = 1e-4,
         max_iter: int = 100,
         n_init: int = 1,
         init_params: str = "kmeans",

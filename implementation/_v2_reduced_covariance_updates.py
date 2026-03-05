@@ -40,7 +40,7 @@ def _maximization_step_reduced(
     weights: torch.Tensor,
     log_resp: torch.Tensor,
     cov_type: str,
-    reg_covar: float = 1e-6,
+    reg_covar: float = 1e-4,
     update_covariance: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """M-step that optionally skips the covariance recomputation.
