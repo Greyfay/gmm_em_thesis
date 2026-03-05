@@ -100,18 +100,18 @@ def _run_e_step_test(label, estimate_log_prob_fn, expectation_step_fn, compute_p
     np.random.seed(SEED_ESTEP)
     N, D, K = 100, 5, 3
 
-    X_np = np.random.randn(N, D).astype(np.float64)
+    rng = np.random.RandomState(SEED_ESTEP)
+    X_np = rng.randn(N, D).astype(np.float64)
     X_t  = torch.from_numpy(X_np)
 
-    rng = np.random.RandomState(42)
     means_np = rng.randn(K, D).astype(np.float64)
     means_t  = torch.from_numpy(means_np)
 
     weights_np = np.ones(K) / K
     weights_t  = torch.from_numpy(weights_np)
 
-    # Diagonal covariance: var > 0
-    cov_np      = np.tile(np.ones(D, dtype=np.float64), (K, 1)) + 0.5  # (K, D)
+    # Diagonal covariance: var > 0 (randomized scale, always positive)
+    cov_np      = np.tile(rng.uniform(0.5, 2.0, D).astype(np.float64), (K, 1))  # (K, D)
     prec_chol_np = 1.0 / np.sqrt(cov_np)
 
     # sklearn reference
@@ -170,13 +170,12 @@ def test_e_step_correctness():
 # ───────────────────────────────────────────────────────────────────────────
 
 def _run_m_step_test(label, maximization_step_fn):
-    np.random.seed(SEED_MSTEP)
+    rng = np.random.RandomState(SEED_MSTEP)
     N, D, K = 100, 5, 3
 
-    X_np = np.random.randn(N, D).astype(np.float64)
+    X_np = rng.randn(N, D).astype(np.float64)
     X_t  = torch.from_numpy(X_np)
 
-    rng = np.random.RandomState(42)
     resp_np = rng.uniform(0, 1, (N, K)).astype(np.float64)
     resp_np /= resp_np.sum(axis=1, keepdims=True)
     resp_t     = torch.from_numpy(resp_np)
