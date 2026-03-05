@@ -32,8 +32,8 @@ COV_TYPE = "full"
 REG_COVAR = 1e-6
 
 # Single epsilon constant used for nk smoothing across both numpy and torch paths.
-# Matches sklearn's convention: 10 * machine epsilon for float64.
-_NK_EPS = float(10.0 * np.finfo(np.float64).eps)
+# Matches sklearn's convention: 10 * machine epsilon for float32.
+_NK_EPS = float(10.0 * np.finfo(np.float32).eps)
 
 
 def make_spd_covs(K, D, rng):
@@ -41,20 +41,20 @@ def make_spd_covs(K, D, rng):
     for _ in range(K):
         A = rng.standard_normal((D, D))
         covs.append(A @ A.T + np.eye(D))
-    return np.stack(covs).astype(np.float64)
+    return np.stack(covs).astype(np.float32)
 
 
 def make_datasets(N, K, D, rng):
     """Pre-generate N_RUNS datasets for a given D, shared across all implementations."""
     datasets = []
     for _ in range(N_RUNS):
-        weights_np = np.ones(K, dtype=np.float64) / K
-        means_np = rng.standard_normal((K, D)).astype(np.float64)
+        weights_np = np.ones(K, dtype=np.float32) / K
+        means_np = rng.standard_normal((K, D)).astype(np.float32)
         covs_np = make_spd_covs(K, D, rng)
-        X_np = rng.standard_normal((N, D)).astype(np.float64)
+        X_np = rng.standard_normal((N, D)).astype(np.float32)
 
         # sklearn: precisions_cholesky_ = inv(L).T  (upper-triangular, shape K×D×D)
-        prec_chol_sk = np.zeros((K, D, D), dtype=np.float64)
+        prec_chol_sk = np.zeros((K, D, D), dtype=np.float32)
         for k in range(K):
             L = np.linalg.cholesky(covs_np[k])
             prec_chol_sk[k] = np.linalg.solve(L, np.eye(D)).T
