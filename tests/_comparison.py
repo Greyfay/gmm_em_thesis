@@ -431,11 +431,113 @@ def test_end_to_end():
 
 
 # ───────────────────────────────────────────────────────────────────────────
+# Test 4: Cholesky / positive-definiteness stability
+# ───────────────────────────────────────────────────────────────────────────
+
+def test_cholesky_stability():
+    """
+    Regression test for:
+        torch._C._LinAlgError: linalg.cholesky: The factorization could not be
+        completed because the input is not positive-definite.
+
+    This crash occurs in _compute_precisions_cholesky (called after each M-step)
+    when a covariance matrix produced by the M-step is no longer positive definite.
+    Root causes:
+      - A component accumulates too few points (near-collapse) so its empirical
+        covariance is rank-deficient or indefinite before reg_covar is added.
+      - reg_covar is too small to restore positive definiteness.
+      - High D magnifies both effects (more dimensions = harder to stay SPD).
+
+    The test runs EM under several stress configurations (full covariance, varying
+    D and reg_covar) and asserts that every final covariance matrix is positive
+    definite by checking its minimum eigenvalue. This catches the problem before
+    it reaches the Cholesky call.
+
+    Implementations tested: _v0_ref and _v1 (the benchmark targets).
+    """
+    print("=" * 80)
+    print("TEST 4: Cholesky / Positive-Definiteness Stability")
+    print("=" * 80)
+
+    # Stress configurations: (N, D, K, reg_covar)
+    # D is kept moderate for test speed, but covers the high-D regime.
+    # K is intentionally large relative to N to encourage near-empty components.
+    configs = [
+        (200,  20,  8, 1e-6),   # baseline stress
+        (200,  50,  8, 1e-6),   # higher D
+        (200, 100,  8, 1e-6),   # D approaching benchmark scale
+        (100,  30, 10, 1e-6),   # K large relative to N
+        (200,  50,  8, 1e-4),   # larger reg_covar — should always pass
+    ]
+
+    impls = [
+        ("_v0_ref", v0.TorchGaussianMixture),
+        ("_v1",     v1.TorchGaussianMixture),
+    ]
+
+    rng = np.random.RandomState(42)
+    failed = []
+
+    print(f"\n  {'impl':<10} {'N':>5} {'D':>5} {'K':>4} {'reg_covar':>10}  result")
+
+    for N, D, K, reg_covar in configs:
+        X_np = rng.randn(N, D).astype(np.float64)
+        X_t  = torch.from_numpy(X_np)
+
+        for label, GMM_cls in impls:
+            try:
+                gmm = GMM_cls(
+                    n_components=K,
+                    covariance_type="full",
+                    reg_covar=reg_covar,
+                    max_iter=100,
+                    tol=1e-4,
+                    n_init=1,
+                    init_params="kmeans",
+                    device=None,
+                    dtype=torch.float64,
+                ).fit(X_t)
+
+                # Verify all K covariance matrices are positive definite
+                covs = gmm.covariances_.cpu().numpy()  # (K, D, D)
+                min_eigvals = np.array([
+                    np.linalg.eigvalsh(covs[k]).min() for k in range(K)
+                ])
+                min_ev = float(min_eigvals.min())
+
+                if min_ev <= 0:
+                    result = f"FAIL (min_eigval={min_ev:.2e})"
+                    failed.append(
+                        f"{label} N={N} D={D} K={K} reg={reg_covar}: "
+                        f"non-positive-definite covariance (min_eigval={min_ev:.2e})"
+                    )
+                else:
+                    result = f"ok (min_eigval={min_ev:.2e})"
+
+            except Exception as e:
+                result = f"CRASH: {type(e).__name__}"
+                failed.append(
+                    f"{label} N={N} D={D} K={K} reg={reg_covar}: {type(e).__name__}: {e}"
+                )
+
+            print(f"  {label:<10} {N:>5} {D:>5} {K:>4} {reg_covar:>10.0e}  {result}")
+
+    if failed:
+        print()
+        for msg in failed:
+            print(f"  FAIL: {msg}")
+        raise AssertionError("Cholesky stability failures:\n" + "\n".join(failed))
+
+    print("\n+ Cholesky stability PASSED\n")
+
+
+# ───────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     test_e_step_correctness()
     test_m_step_correctness()
     test_end_to_end()
+    test_cholesky_stability()
 
     print("=" * 80)
     print("ALL TESTS PASSED")
