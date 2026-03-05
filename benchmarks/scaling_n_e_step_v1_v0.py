@@ -15,7 +15,7 @@ import torch
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from sklearn_mixture._gaussian_mixture import GaussianMixture
+from sklearn.mixture import GaussianMixture
 from implementation import _v0_ref
 from implementation import _v1
 
