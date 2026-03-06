@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """Convergence benchmark: _v1 vs _v2_reduced_covariance_updates.
 
-Fixed: K=5, D=100, COV_TYPE='full'. N in [1e4, 1e5, 1e6].
-N_RUNS independent runs per (N, covariance_update_frequency) configuration.
+Two sweeps, combined into a single flat experiment list:
+
+  N sweep  — D fixed at 10 or 100, N in [1e4, 1e5, 1e6].
+             Tests how the freq trade-off scales with dataset size.
+
+  D sweep  — N fixed at 10,000, D in [10, 50, 250, 500].
+             Tests how the freq trade-off scales with dimensionality.
+             N=10,000 keeps each problem well-enough conditioned across all D.
 
 covariance_update_frequency=1 is the v1 baseline (full M-step every iteration).
 Higher values skip the covariance recomputation on non-multiple iterations,
@@ -13,9 +19,9 @@ Measures per run:
   - number of iterations to convergence
   - actual covariance updates performed
   - log-likelihood change: lower_bound[final] - lower_bound[initial]
-  - total wall time = sum of all timed iteration times (derived)
+  - total wall time = sum of all timed iteration times
 
-Results are aggregated as mean ± std across runs.
+Results are aggregated as mean ± std across N_RUNS runs.
 Outputs a summary table to stdout and a CSV file.
 """
 
@@ -39,15 +45,29 @@ from implementation._v1 import (
 )
 from implementation._v2_reduced_covariance_updates import _maximization_step_reduced
 
-K           = 5
-D           = 100
-N_VALUES    = [10_000, 100_000, 1_000_000]
-N_RUNS      = 30
-COV_TYPE    = "full"
-REG_COVAR   = 1e-4
-TOL         = 1e-3
-MAX_ITER    = 200
-COV_FREQS   = [1, 2, 4, 8]   # 1 == v1 baseline
+K         = 5
+N_RUNS    = 30
+COV_TYPE  = "full"
+REG_COVAR = 1e-4
+TOL       = 1e-3
+MAX_ITER  = 200
+COV_FREQS = [1, 2, 4, 8]   # 1 == v1 baseline
+
+# N sweep: two fixed D values, three N values each
+_N_SWEEP_N = [10_000, 100_000, 1_000_000]
+_N_SWEEP   = [(10, N) for N in _N_SWEEP_N] + [(100, N) for N in _N_SWEEP_N]
+
+# D sweep: fixed N=10,000, four D values
+_D_SWEEP_N = 10_000
+_D_SWEEP   = [(D, _D_SWEEP_N) for D in [10, 50, 250, 500]]
+
+# Combined — (10, 10_000) appears in both sweeps; deduplicate while preserving order
+_seen      = set()
+EXPERIMENTS = []
+for pair in _N_SWEEP + _D_SWEEP:
+    if pair not in _seen:
+        _seen.add(pair)
+        EXPERIMENTS.append(pair)
 
 
 # ---------------------------------------------------------------------------
@@ -55,19 +75,18 @@ COV_FREQS   = [1, 2, 4, 8]   # 1 == v1 baseline
 # ---------------------------------------------------------------------------
 
 def _run_em(X_t, p_init, cov_freq):
-    """Run EM to convergence from p_init using covariance_update_frequency=cov_freq.
+    """Run EM to convergence using covariance_update_frequency=cov_freq.
 
     cov_freq=1 reproduces v1 exactly (full M-step every iteration).
-    cov_freq>1 skips covariance recomputation on non-multiple iterations.
 
     Times only: E-step + M-step + Cholesky per iteration.
 
     Returns:
-        iter_times_ms  : list[float]  per-iteration wall times in ms
-        n_iter         : int          iterations until convergence
-        cov_updates    : int          how many times covariance was actually updated
-        initial_ll     : float        lower bound at iteration 0
-        final_ll       : float        lower bound at convergence
+        iter_times_ms : list[float]
+        n_iter        : int
+        cov_updates   : int
+        initial_ll    : float
+        final_ll      : float
     """
     p = GMMParams(
         weights=p_init.weights.clone(),
@@ -77,12 +96,12 @@ def _run_em(X_t, p_init, cov_freq):
         cov_type=COV_TYPE,
     )
 
-    prev_lower   = float("-inf")
-    iter_times   = []
-    initial_ll   = None
-    final_ll     = None
-    n_iter       = MAX_ITER
-    cov_updates  = 0
+    prev_lower  = float("-inf")
+    iter_times  = []
+    initial_ll  = None
+    final_ll    = None
+    n_iter      = MAX_ITER
+    cov_updates = 0
 
     for it in range(MAX_ITER):
         update_cov = (it % cov_freq == 0)
@@ -93,13 +112,10 @@ def _run_em(X_t, p_init, cov_freq):
         lower, log_resp = _expectation_step_precchol(
             X_t, p.means, p.prec_chol, p.weights, COV_TYPE
         )
-
         means, cov, weights = _maximization_step_reduced(
             X_t, p.means, p.cov, p.weights, log_resp, COV_TYPE,
-            reg_covar=REG_COVAR,
-            update_covariance=update_cov,
+            reg_covar=REG_COVAR, update_covariance=update_cov,
         )
-
         prec_chol = _compute_precisions_cholesky(cov, COV_TYPE)
 
         iter_times.append((time.perf_counter() - t0) * 1e3)
@@ -131,18 +147,18 @@ def _run_em(X_t, p_init, cov_freq):
 # ---------------------------------------------------------------------------
 
 def _print_table(all_rows):
-    W   = 112
+    W   = 114
     sep = "-" * W
 
     print()
     print("=" * W)
     print(
-        f"  CONVERGENCE BENCHMARK (reduced cov updates)   K={K}  D={D}  "
-        f"COV_TYPE={COV_TYPE}  tol={TOL}  max_iter={MAX_ITER}  runs={N_RUNS}"
+        f"  REDUCED COV BENCHMARK   K={K}  COV_TYPE={COV_TYPE}  "
+        f"tol={TOL}  max_iter={MAX_ITER}  runs={N_RUNS}"
     )
     print("=" * W)
     header = (
-        f"  {'N':>10}  {'freq':>5}  "
+        f"  {'D':>4}  {'N':>10}  {'freq':>6}  "
         f"{'ms/iter':>16}  "
         f"{'n_iter':>12}  "
         f"{'cov_updates':>12}  "
@@ -151,21 +167,22 @@ def _print_table(all_rows):
     )
     print(header)
 
-    prev_N = None
+    prev_key = None
     for row in all_rows:
-        if row["N"] != prev_N:
+        key = (row["D"], row["N"])
+        if key != prev_key:
             print(sep)
-            prev_N = row["N"]
+            prev_key = key
 
         t_s   = f"{row['iter_time_mean_ms']:.3f} ± {row['iter_time_std_ms']:.3f}"
         n_s   = f"{row['n_iter_mean']:.1f} ± {row['n_iter_std']:.1f}"
         cu_s  = f"{row['cov_updates_mean']:.1f} ± {row['cov_updates_std']:.1f}"
         tot_s = f"{row['total_time_mean_ms']:.1f} ± {row['total_time_std_ms']:.1f}"
         ll_s  = f"{row['ll_change_mean']:.3f} ± {row['ll_change_std']:.3f}"
-
         freq_label = f"{row['cov_freq']}" + (" (v1)" if row["cov_freq"] == 1 else "")
+
         print(
-            f"  {row['N']:>10,}  {freq_label:>5}  "
+            f"  {row['D']:>4}  {row['N']:>10,}  {freq_label:>6}  "
             f"{t_s:>16}  "
             f"{n_s:>12}  "
             f"{cu_s:>12}  "
@@ -187,16 +204,16 @@ def main():
 
     all_rows = []
 
-    for i, N in enumerate(N_VALUES):
+    for exp_idx, (D, N) in enumerate(EXPERIMENTS):
         print(
-            f"\n[{i+1}/{len(N_VALUES)}] N={N:,}  K={K}  D={D}  —  "
-            f"{N_RUNS} runs × {len(COV_FREQS)} frequencies",
+            f"\n[{exp_idx+1}/{len(EXPERIMENTS)}  D={D}  N={N:,}]  "
+            f"K={K}  —  {N_RUNS} runs × {len(COV_FREQS)} frequencies",
             flush=True,
         )
 
         # Warmup: a few untimed iterations on a small dummy dataset
-        Xw    = torch.randn(min(N, 1000), D, dtype=torch.float32)
-        p_w   = _BaseGMM(
+        Xw   = torch.randn(min(N, 1000), D, dtype=torch.float32)
+        p_w  = _BaseGMM(
             n_components=K, covariance_type=COV_TYPE,
             reg_covar=REG_COVAR, init_params="random_from_data",
         )._initialize(Xw)
@@ -208,24 +225,20 @@ def main():
             )
             _compute_precisions_cholesky(cv, COV_TYPE)
 
-        # Pre-generate datasets for all runs
-        datasets = []
-        for _ in range(N_RUNS):
-            X_np = rng.standard_normal((N, D)).astype(np.float32)
-            datasets.append(torch.from_numpy(X_np))
-
         for freq in COV_FREQS:
-            freq_label = f"freq={freq}" + (" [v1 baseline]" if freq == 1 else "")
+            freq_label = f"freq={freq}" + (" [v1]" if freq == 1 else "")
             print(f"  {freq_label}", flush=True)
 
-            avg_times_per_run  = []
-            n_iters_per_run    = []
+            avg_times_per_run   = []
+            n_iters_per_run     = []
             cov_updates_per_run = []
-            ll_changes_per_run = []
+            ll_changes_per_run  = []
             total_times_per_run = []
 
-            for run_idx, X_t in enumerate(datasets):
-                # Fresh shared initialization for each run (same across frequencies)
+            for run_idx in range(N_RUNS):
+                X_np = rng.standard_normal((N, D)).astype(np.float32)
+                X_t  = torch.from_numpy(X_np)
+
                 p_init = _BaseGMM(
                     n_components=K, covariance_type=COV_TYPE,
                     reg_covar=REG_COVAR, init_params="random_from_data",
@@ -233,30 +246,25 @@ def main():
 
                 times, n_iter, cov_upd, ll0, llf = _run_em(X_t, p_init, freq)
 
-                avg_t    = float(np.mean(times))
-                total_t  = float(np.sum(times))
-                ll_delta = llf - ll0
-
-                avg_times_per_run.append(avg_t)
+                avg_times_per_run.append(float(np.mean(times)))
                 n_iters_per_run.append(n_iter)
                 cov_updates_per_run.append(cov_upd)
-                ll_changes_per_run.append(ll_delta)
-                total_times_per_run.append(total_t)
+                ll_changes_per_run.append(llf - ll0)
+                total_times_per_run.append(float(np.sum(times)))
 
                 print(
                     f"    run {run_idx+1:2d}/{N_RUNS}  "
-                    f"{n_iter:3d} iters  "
-                    f"cov_updates={cov_upd:3d}  "
-                    f"avg {avg_t:8.2f} ms/iter  "
-                    f"total {total_t:8.1f} ms  "
-                    f"ΔLL={ll_delta:+.3f}",
+                    f"{n_iter:3d} iters  cov_updates={cov_upd:3d}  "
+                    f"avg {float(np.mean(times)):8.2f} ms/iter  "
+                    f"total {float(np.sum(times)):8.1f} ms  "
+                    f"ΔLL={llf - ll0:+.3f}",
                     flush=True,
                 )
 
             row = {
+                "D":                    D,
                 "N":                    N,
                 "K":                    K,
-                "D":                    D,
                 "cov_freq":             freq,
                 "iter_time_mean_ms":    round(float(np.mean(avg_times_per_run)),   4),
                 "iter_time_std_ms":     round(float(np.std(avg_times_per_run)),    4),
@@ -271,7 +279,7 @@ def main():
             }
             all_rows.append(row)
 
-        print(f"[{i+1}/{len(N_VALUES)}] N={N:,}  done.", flush=True)
+        print(f"[D={D}  N={N:,}]  done.", flush=True)
 
     _print_table(all_rows)
 
