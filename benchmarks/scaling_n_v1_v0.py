@@ -28,7 +28,7 @@ DEVICE = torch.device("cuda")
 
 K = 5
 D = 50
-N_VALUES = [10_000, 100_000, 1_000_000, 10_000_000]
+N_VALUES = [10_000, 100_000, 1_000_000, 5_000_000]
 N_RUNS = 30
 COV_TYPE = "full"
 

@@ -143,6 +143,9 @@ def _run_em(X_t, p_init, cov_freq):
             break
         prev_lower = lower_f
 
+    if n_iter == MAX_ITER:
+        print(f"  WARNING: did not converge within {MAX_ITER} iterations", flush=True)
+
     return iter_times, n_iter, cov_updates, initial_ll, final_ll
 
 
@@ -286,6 +289,7 @@ def main():
             all_rows.append(row)
 
         print(f"[D={D}  N={N:,}]  done.", flush=True)
+        torch.cuda.empty_cache()
 
     _print_table(all_rows)
 
