@@ -27,7 +27,7 @@ from implementation import _v1
 K = 5
 N = 1000
 D_VALUES = [5, 10, 20, 50, 100, 500, 1000, 5000]
-N_RUNS = 10
+N_RUNS = 30
 COV_TYPE = "full"
 
 # Single epsilon constant used for nk smoothing across both numpy and torch paths.
