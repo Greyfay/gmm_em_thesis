@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Convergence benchmark: _v1 vs _v2_tiling.
 
-Fixed: K=5, D=50, COV_TYPE='full'. N in [1e4, 1e5, 1e6].
+Fixed: K=5, D=20, COV_TYPE='full'. N in [1e4, 1e5, 1e6].
 N_RUNS independent runs per configuration (each with fresh random data and shared init).
 
 Measures per run:
@@ -27,9 +27,9 @@ sys.path.insert(0, ROOT)
 from implementation import _v1, _v2_tiling
 
 K         = 5
-D         = 50
+D         = 20
 N_VALUES  = [10_000, 100_000, 1_000_000]
-N_RUNS    = 10
+N_RUNS    = 30
 COV_TYPE  = "full"
 REG_COVAR = 1e-4
 TOL       = 1e-3

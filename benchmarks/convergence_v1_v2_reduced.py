@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Convergence benchmark: _v1 vs _v2_reduced_covariance_updates.
 
-Fixed: K=5, D=50, COV_TYPE='full'. N in [1e4, 1e5, 1e6].
+Fixed: K=5, D=100, COV_TYPE='full'. N in [1e4, 1e5, 1e6].
 N_RUNS independent runs per (N, covariance_update_frequency) configuration.
 
 covariance_update_frequency=1 is the v1 baseline (full M-step every iteration).
@@ -40,9 +40,9 @@ from implementation._v1 import (
 from implementation._v2_reduced_covariance_updates import _maximization_step_reduced
 
 K           = 5
-D           = 50
+D           = 100
 N_VALUES    = [10_000, 100_000, 1_000_000]
-N_RUNS      = 10
+N_RUNS      = 30
 COV_TYPE    = "full"
 REG_COVAR   = 1e-4
 TOL         = 1e-3
