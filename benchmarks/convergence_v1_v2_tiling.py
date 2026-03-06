@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Convergence benchmark: _v1 vs _v2_tiling across tile sizes.
 
-Outer sweep: D in [20, 80].
+Outer sweep: D in [10, 20, 80].
 Fixed: N=100,000.
 Per D: v1 baseline + v2_tiling with each tile size in TILE_SIZES.
 
@@ -33,7 +33,7 @@ from implementation import _v1, _v2_tiling
 
 K          = 5
 N          = 100_000
-D_VALUES   = [20, 80]
+D_VALUES   = [10, 20, 80]
 N_RUNS     = 30
 COV_TYPE   = "full"
 REG_COVAR  = 1e-4
