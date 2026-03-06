@@ -236,7 +236,12 @@ def main():
         sk_cov_times, v0_cov_times, v1_cov_times       = [], [], []
         sk_chol_times, v0_chol_times, v1_chol_times     = [], [], []
 
-        for ds in datasets:
+        for run_idx, ds in enumerate(datasets, start=1):
+            print(
+                f"[{i+1}/{len(D_VALUES)}] D={D:,} — run {run_idx}/{N_RUNS}",
+                file=sys.stderr,
+                flush=True,
+            )
             X_t  = ds["X_t"]
             X_np = ds["X_np"]
 
