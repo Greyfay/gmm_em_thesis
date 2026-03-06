@@ -29,7 +29,6 @@ N = 1000
 D_VALUES = [5, 10, 20, 50, 100, 500, 1000, 5000]
 N_RUNS = 10
 COV_TYPE = "full"
-REG_COVAR = 1e-6
 
 # Single epsilon constant used for nk smoothing across both numpy and torch paths.
 # Matches sklearn's convention: 10 * machine epsilon for float32.
@@ -90,17 +89,17 @@ def _torch_mean_update(resp_t, X_t, nk_t):
     return (resp_t.T @ X_t) / nk_t.unsqueeze(1)
 
 
-def _sk_cov_update(X_np, resp_np, nk_np, new_means_np, K, D):
+def _sk_cov_update(X_np, resp_np, nk_np, new_means_np, K, D, reg_covar=1e-6):
     """numpy loop matching sklearn's _estimate_gaussian_covariances_full."""
     new_cov = np.empty((K, D, D))
     for k in range(K):
         diff_k = X_np - new_means_np[k]
         new_cov[k] = np.dot((resp_np[:, k:k+1] * diff_k).T, diff_k) / nk_np[k]
-        new_cov[k].flat[::D + 1] += REG_COVAR
+        new_cov[k].flat[::D + 1] += reg_covar
     return new_cov
 
 
-def _v0_cov_update(X_t, resp_t, nk_t, new_means_t, K, D):
+def _v0_cov_update(X_t, resp_t, nk_t, new_means_t, K, D, reg_covar=1e-4):
     """torch loop matching v0_ref's full covariance update."""
     diff = X_t.unsqueeze(1) - new_means_t.unsqueeze(0)  # (N,K,D)
     new_cov = torch.empty((K, D, D), device=X_t.device, dtype=X_t.dtype)
@@ -109,16 +108,16 @@ def _v0_cov_update(X_t, resp_t, nk_t, new_means_t, K, D):
         wdiff = diff[:, k, :] * resp_t[:, k].unsqueeze(1)
         new_cov[k] = (wdiff.T @ diff[:, k, :]) / nk_t[k]
     # Add regularisation in one shot outside the loop, matching v0_ref exactly.
-    return new_cov + REG_COVAR * eye
+    return new_cov + reg_covar * eye
 
 
-def _v1_cov_update(X_t, resp_t, nk_t, new_means_t, K, D):
+def _v1_cov_update(X_t, resp_t, nk_t, new_means_t, K, D, reg_covar=1e-4):
     """torch einsum matching v1's full covariance update."""
     diff = X_t.unsqueeze(1) - new_means_t.unsqueeze(0)  # (N,K,D)
     cov_sum = torch.einsum('nk,nkd,nke->kde', resp_t, diff, diff)
     new_cov = cov_sum / nk_t.unsqueeze(1).unsqueeze(2)
     eye = torch.eye(D, device=X_t.device, dtype=X_t.dtype)
-    return new_cov + REG_COVAR * eye.unsqueeze(0)
+    return new_cov + reg_covar * eye.unsqueeze(0)
 
 
 def _agg(lst):
@@ -181,7 +180,8 @@ def main():
         ds0 = datasets[0]
 
         # GaussianMixture is constructed once per D block and reused.
-        model = GaussianMixture(n_components=K, covariance_type=COV_TYPE)
+        # sklearn default reg_covar=1e-6, but we use 1e-4 for high-D stability
+        model = GaussianMixture(n_components=K, covariance_type=COV_TYPE, reg_covar=1e-4)
         model.weights_ = ds0["weights_np"]
         model.means_   = ds0["means_np"]
         model.precisions_cholesky_ = ds0["prec_chol_sk"]
@@ -220,9 +220,9 @@ def main():
         _v0_ref._estimate_log_gaussian_prob_full_precchol(ds0["X_t"], ds0["means_t"], ds0["prec_chol_t"])
         _v1._estimate_log_gaussian_prob_full_precchol(ds0["X_t"], ds0["means_t"], ds0["prec_chol_t"])
 
-        wu_new_cov_sk = _sk_cov_update(ds0["X_np"], wu_resp_np, wu_nk_np, wu_means_np, K, D)
-        wu_new_cov_v0 = _v0_cov_update(ds0["X_t"], wu_resp_t_v0, wu_nk_t_v0, wu_means_t_v0, K, D)
-        wu_new_cov_v1 = _v1_cov_update(ds0["X_t"], wu_resp_t_v1, wu_nk_t_v1, wu_means_t_v1, K, D)
+        wu_new_cov_sk = _sk_cov_update(ds0["X_np"], wu_resp_np, wu_nk_np, wu_means_np, K, D, reg_covar=1e-4)
+        wu_new_cov_v0 = _v0_cov_update(ds0["X_t"], wu_resp_t_v0, wu_nk_t_v0, wu_means_t_v0, K, D, reg_covar=1e-4)
+        wu_new_cov_v1 = _v1_cov_update(ds0["X_t"], wu_resp_t_v1, wu_nk_t_v1, wu_means_t_v1, K, D, reg_covar=1e-4)
 
         _compute_precision_cholesky(wu_new_cov_sk, COV_TYPE)
         _v0_ref._compute_precisions_cholesky(wu_new_cov_v0, COV_TYPE)
@@ -325,15 +325,15 @@ def main():
 
             # --- Covariance update (M-step); output reused as cholesky input ---
             t0 = time.perf_counter()
-            new_cov_sk = _sk_cov_update(X_np, resp_np, nk_np, means_np, K, D)
+            new_cov_sk = _sk_cov_update(X_np, resp_np, nk_np, means_np, K, D, reg_covar=1e-4)
             sk_cov_times.append((time.perf_counter() - t0) * 1e3)
 
             t0 = time.perf_counter()
-            new_cov_v0 = _v0_cov_update(X_t, resp_t_v0, nk_t_v0, means_t_v0, K, D)
+            new_cov_v0 = _v0_cov_update(X_t, resp_t_v0, nk_t_v0, means_t_v0, K, D, reg_covar=1e-4)
             v0_cov_times.append((time.perf_counter() - t0) * 1e3)
 
             t0 = time.perf_counter()
-            new_cov_v1 = _v1_cov_update(X_t, resp_t_v1, nk_t_v1, means_t_v1, K, D)
+            new_cov_v1 = _v1_cov_update(X_t, resp_t_v1, nk_t_v1, means_t_v1, K, D, reg_covar=1e-4)
             v1_cov_times.append((time.perf_counter() - t0) * 1e3)
 
             # --- Cholesky factorization (M-step) ---
