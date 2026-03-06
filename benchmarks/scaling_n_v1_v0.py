@@ -219,9 +219,9 @@ def main():
         _v0_ref._estimate_log_gaussian_prob_full_precchol(ds0["X_t"], ds0["means_t"], ds0["prec_chol_t"])
         _v1._estimate_log_gaussian_prob_full_precchol(ds0["X_t"], ds0["means_t"], ds0["prec_chol_t"])
 
-        wu_new_cov_sk = _sk_cov_update(ds0["X_np"], wu_resp_np, wu_nk_np, wu_means_np)
-        wu_new_cov_v0 = _v0_cov_update(ds0["X_t"], wu_resp_t_v0, wu_nk_t_v0, wu_means_t_v0)
-        wu_new_cov_v1 = _v1_cov_update(ds0["X_t"], wu_resp_t_v1, wu_nk_t_v1, wu_means_t_v1)
+        wu_new_cov_sk = _sk_cov_update(ds0["X_np"], wu_resp_np, wu_nk_np, wu_means_np, K, D, reg_covar=1e-4)
+        wu_new_cov_v0 = _v0_cov_update(ds0["X_t"], wu_resp_t_v0, wu_nk_t_v0, wu_means_t_v0, K, D, reg_covar=1e-4)
+        wu_new_cov_v1 = _v1_cov_update(ds0["X_t"], wu_resp_t_v1, wu_nk_t_v1, wu_means_t_v1, K, D, reg_covar=1e-4)
 
         _compute_precision_cholesky(wu_new_cov_sk, COV_TYPE)
         _v0_ref._compute_precisions_cholesky(wu_new_cov_v0, COV_TYPE)
@@ -324,15 +324,15 @@ def main():
 
             # --- Covariance update (M-step); output reused as cholesky input ---
             t0 = time.perf_counter()
-            new_cov_sk = _sk_cov_update(X_np, resp_np, nk_np, means_np)
+            new_cov_sk = _sk_cov_update(X_np, resp_np, nk_np, means_np, K, D, reg_covar=1e-4)
             sk_cov_times.append((time.perf_counter() - t0) * 1e3)
 
             t0 = time.perf_counter()
-            new_cov_v0 = _v0_cov_update(X_t, resp_t_v0, nk_t_v0, means_t_v0)
+            new_cov_v0 = _v0_cov_update(X_t, resp_t_v0, nk_t_v0, means_t_v0, K, D, reg_covar=1e-4)
             v0_cov_times.append((time.perf_counter() - t0) * 1e3)
 
             t0 = time.perf_counter()
-            new_cov_v1 = _v1_cov_update(X_t, resp_t_v1, nk_t_v1, means_t_v1)
+            new_cov_v1 = _v1_cov_update(X_t, resp_t_v1, nk_t_v1, means_t_v1, K, D, reg_covar=1e-4)
             v1_cov_times.append((time.perf_counter() - t0) * 1e3)
 
             # --- Cholesky factorization (M-step) ---
