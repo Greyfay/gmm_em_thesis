@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""Convergence benchmark: _v1 vs _v2_tiling.
+"""Convergence benchmark: _v1 vs _v2_tiling across tile sizes.
 
-Fixed: K=5, D=20, COV_TYPE='full'. N in [1e4, 1e5, 1e6].
-N_RUNS independent runs per configuration (each with fresh random data and shared init).
+Outer sweep: D in [20, 80].
+Fixed: N=100,000.
+Per D: v1 baseline + v2_tiling with each tile size in TILE_SIZES.
+
+All configurations share the same initialisation within each run so that
+differences in ms/iter, n_iter, and ΔLL are attributable purely to the
+M-step implementation (einsum vs chunked bmm) and chunk size.
 
 Measures per run:
-  - avg time per EM iteration (E-step + M-step + Cholesky factorization)
+  - avg time per EM iteration (E-step + M-step + Cholesky)
   - number of iterations to convergence
   - log-likelihood change: lower_bound[final] - lower_bound[initial]
 
-Results are aggregated as mean ± std across runs.
+Results are aggregated as mean ± std across N_RUNS runs.
 Outputs a summary table to stdout and a CSV file.
 """
 
@@ -26,15 +31,15 @@ sys.path.insert(0, ROOT)
 
 from implementation import _v1, _v2_tiling
 
-K         = 5
-D         = 20
-N_VALUES  = [10_000, 100_000, 1_000_000]
-N_RUNS    = 30
-COV_TYPE  = "full"
-REG_COVAR = 1e-4
-TOL       = 1e-3
-MAX_ITER  = 200
-V2_CHUNK  = 1024   # chunk_N (tile_B) passed to _v2_tiling._maximization_step
+K          = 5
+N          = 100_000
+D_VALUES   = [20, 80]
+N_RUNS     = 30
+COV_TYPE   = "full"
+REG_COVAR  = 1e-4
+TOL        = 1e-3
+MAX_ITER   = 200
+TILE_SIZES = [128, 256, 512, 1024, 2048, 4096]
 
 
 # ---------------------------------------------------------------------------
@@ -44,14 +49,16 @@ V2_CHUNK  = 1024   # chunk_N (tile_B) passed to _v2_tiling._maximization_step
 def _run_em(X_t, p_init, module, chunk_N=None):
     """Run EM to convergence from p_init using the given module.
 
-    p_init is a GMMParams-like object (weights/means/cov/prec_chol/cov_type).
+    chunk_N=None  → v1 (no tile_B argument passed to _maximization_step)
+    chunk_N=int   → v2_tiling with that chunk size
+
     Times only: E-step + M-step + Cholesky per iteration.
 
     Returns:
-        iter_times_ms  : list[float]  per-iteration wall times in ms
-        n_iter         : int          iterations until convergence (capped at MAX_ITER)
-        initial_ll     : float        lower bound at iteration 0
-        final_ll       : float        lower bound at convergence
+        iter_times_ms : list[float]  per-iteration wall times in ms
+        n_iter        : int          iterations until convergence
+        initial_ll    : float        lower bound at iteration 0
+        final_ll      : float        lower bound at convergence
     """
     p = module.GMMParams(
         weights=p_init.weights.clone(),
@@ -114,52 +121,45 @@ def _run_em(X_t, p_init, module, chunk_N=None):
 # ---------------------------------------------------------------------------
 
 def _print_table(all_rows):
-    W   = 108
+    W   = 106
     sep = "-" * W
 
     print()
     print("=" * W)
     print(
-        f"  CONVERGENCE BENCHMARK   K={K}  D={D}  COV_TYPE={COV_TYPE}  "
-        f"tol={TOL}  max_iter={MAX_ITER}  runs={N_RUNS}  v2_chunk={V2_CHUNK}"
+        f"  TILING BENCHMARK   K={K}  COV_TYPE={COV_TYPE}  "
+        f"tol={TOL}  max_iter={MAX_ITER}  runs={N_RUNS}"
     )
     print("=" * W)
     header = (
-        f"  {'N':>10}  "
-        f"{'v1 ms/iter':>16}  "
-        f"{'v2 ms/iter':>16}  "
+        f"  {'D':>4}  {'config':>12}  "
+        f"{'ms/iter':>16}  "
         f"{'speedup':>8}  "
-        f"{'v1 n_iter':>12}  "
-        f"{'v2 n_iter':>12}  "
-        f"{'v1 ΔLL':>14}  "
-        f"{'v2 ΔLL':>14}"
+        f"{'n_iter':>12}  "
+        f"{'ΔLL':>16}"
     )
     print(header)
-    print(sep)
 
+    prev_D = None
     for row in all_rows:
-        speedup = (
-            row["v1_iter_time_mean_ms"] / row["v2_iter_time_mean_ms"]
-            if row["v2_iter_time_mean_ms"] > 0 else float("nan")
-        )
-        v1_t  = f"{row['v1_iter_time_mean_ms']:.3f} ± {row['v1_iter_time_std_ms']:.3f}"
-        v2_t  = f"{row['v2_iter_time_mean_ms']:.3f} ± {row['v2_iter_time_std_ms']:.3f}"
-        v1_n  = f"{row['v1_n_iter_mean']:.1f} ± {row['v1_n_iter_std']:.1f}"
-        v2_n  = f"{row['v2_n_iter_mean']:.1f} ± {row['v2_n_iter_std']:.1f}"
-        v1_ll = f"{row['v1_ll_change_mean']:.3f} ± {row['v1_ll_change_std']:.3f}"
-        v2_ll = f"{row['v2_ll_change_mean']:.3f} ± {row['v2_ll_change_std']:.3f}"
-        print(
-            f"  {row['N']:>10,}  "
-            f"{v1_t:>16}  "
-            f"{v2_t:>16}  "
-            f"{speedup:>7.3f}x  "
-            f"{v1_n:>12}  "
-            f"{v2_n:>12}  "
-            f"{v1_ll:>14}  "
-            f"{v2_ll:>14}"
-        )
-        print(sep)
+        if row["D"] != prev_D:
+            print(sep)
+            prev_D = row["D"]
 
+        t_s  = f"{row['iter_time_mean_ms']:.3f} ± {row['iter_time_std_ms']:.3f}"
+        n_s  = f"{row['n_iter_mean']:.1f} ± {row['n_iter_std']:.1f}"
+        ll_s = f"{row['ll_change_mean']:.3f} ± {row['ll_change_std']:.3f}"
+        spd  = f"{row['speedup_x']:.3f}x" if not np.isnan(row["speedup_x"]) else "  —  "
+
+        print(
+            f"  {row['D']:>4}  {row['config']:>12}  "
+            f"{t_s:>16}  "
+            f"{spd:>8}  "
+            f"{n_s:>12}  "
+            f"{ll_s:>16}"
+        )
+
+    print(sep)
     print()
 
 
@@ -173,87 +173,97 @@ def main():
 
     all_rows = []
 
-    for i, N in enumerate(N_VALUES):
+    for D in D_VALUES:
         print(
-            f"\n[{i+1}/{len(N_VALUES)}] N={N:,}  K={K}  D={D}  —  {N_RUNS} runs",
+            f"\n[D={D}  N={N:,}]  "
+            f"K={K}  —  {N_RUNS} runs × {1 + len(TILE_SIZES)} configs",
             flush=True,
         )
 
-        v1_avg_times  = []
-        v2_avg_times  = []
-        v1_n_iters    = []
-        v2_n_iters    = []
-        v1_ll_changes = []
-        v2_ll_changes = []
-
-        # Warmup: one untimed run of 2 iterations on a small dummy dataset
-        Xw = torch.randn(min(N, 1000), D, dtype=torch.float32)
+        # Warmup: a few untimed iterations on a small dummy dataset
+        Xw     = torch.randn(min(N, 1000), D, dtype=torch.float32)
         p_warm = _v1.TorchGaussianMixture(
             n_components=K, covariance_type=COV_TYPE,
             reg_covar=REG_COVAR, init_params="random_from_data",
         )._initialize(Xw)
         for _ in range(2):
-            _, lr = _v1._expectation_step_precchol(Xw, p_warm.means, p_warm.prec_chol, p_warm.weights, COV_TYPE)
-            mn, cv, wt = _v1._maximization_step(Xw, p_warm.means, p_warm.cov, p_warm.weights, lr, COV_TYPE, reg_covar=REG_COVAR)
+            _, lr = _v1._expectation_step_precchol(
+                Xw, p_warm.means, p_warm.prec_chol, p_warm.weights, COV_TYPE)
+            mn, cv, wt = _v1._maximization_step(
+                Xw, p_warm.means, p_warm.cov, p_warm.weights, lr, COV_TYPE,
+                reg_covar=REG_COVAR)
             _v1._compute_precisions_cholesky(cv, COV_TYPE)
-        for _ in range(2):
-            _, lr = _v2_tiling._expectation_step_precchol(Xw, p_warm.means, p_warm.prec_chol, p_warm.weights, COV_TYPE)
-            mn, cv, wt = _v2_tiling._maximization_step(Xw, p_warm.means, p_warm.cov, p_warm.weights, lr, COV_TYPE, reg_covar=REG_COVAR, tile_B=V2_CHUNK)
-            _v2_tiling._compute_precisions_cholesky(cv, COV_TYPE)
+        for tile in TILE_SIZES:
+            for _ in range(2):
+                _, lr = _v2_tiling._expectation_step_precchol(
+                    Xw, p_warm.means, p_warm.prec_chol, p_warm.weights, COV_TYPE)
+                mn, cv, wt = _v2_tiling._maximization_step(
+                    Xw, p_warm.means, p_warm.cov, p_warm.weights, lr, COV_TYPE,
+                    reg_covar=REG_COVAR, tile_B=tile)
+                _v2_tiling._compute_precisions_cholesky(cv, COV_TYPE)
+
+        # Per-run accumulators: config label → list of per-run avg times / n_iter / ll_delta
+        configs    = ["v1"] + [f"tile={t}" for t in TILE_SIZES]
+        avg_times  = {c: [] for c in configs}
+        n_iters    = {c: [] for c in configs}
+        ll_changes = {c: [] for c in configs}
 
         for run_idx in range(N_RUNS):
-            print(f"  run {run_idx+1:2d}/{N_RUNS}  generating data...", end=" ", flush=True)
+            X_np   = rng.standard_normal((N, D)).astype(np.float32)
+            X_t    = torch.from_numpy(X_np)
 
-            X_np = rng.standard_normal((N, D)).astype(np.float32)
-            X_t  = torch.from_numpy(X_np)
-
-            # Shared initialization (v1's _initialize; params are pure tensors)
+            # Shared initialisation across all configs for this run
             p_init = _v1.TorchGaussianMixture(
                 n_components=K, covariance_type=COV_TYPE,
                 reg_covar=REG_COVAR, init_params="random_from_data",
             )._initialize(X_t)
 
-            # --- v1 ---
-            v1_times, v1_n, v1_ll0, v1_llf = _run_em(X_t, p_init, _v1, chunk_N=None)
-            v1_avg_times.append(float(np.mean(v1_times)))
-            v1_n_iters.append(v1_n)
-            v1_ll_changes.append(v1_llf - v1_ll0)
+            # v1 baseline
+            times, n, ll0, llf = _run_em(X_t, p_init, _v1, chunk_N=None)
+            avg_times["v1"].append(float(np.mean(times)))
+            n_iters["v1"].append(n)
+            ll_changes["v1"].append(llf - ll0)
 
-            # --- v2_tiling ---
-            v2_times, v2_n, v2_ll0, v2_llf = _run_em(X_t, p_init, _v2_tiling, chunk_N=V2_CHUNK)
-            v2_avg_times.append(float(np.mean(v2_times)))
-            v2_n_iters.append(v2_n)
-            v2_ll_changes.append(v2_llf - v2_ll0)
+            # v2_tiling with each tile size
+            for tile in TILE_SIZES:
+                label = f"tile={tile}"
+                times, n, ll0, llf = _run_em(X_t, p_init, _v2_tiling, chunk_N=tile)
+                avg_times[label].append(float(np.mean(times)))
+                n_iters[label].append(n)
+                ll_changes[label].append(llf - ll0)
 
+            v1_t      = avg_times["v1"][-1]
+            best_tile = min(TILE_SIZES, key=lambda t: avg_times[f"tile={t}"][-1])
+            best_t    = avg_times[f"tile={best_tile}"][-1]
             print(
-                f"v1: {v1_n:3d} iters @ {np.mean(v1_times):8.2f} ms/iter  ΔLL={v1_llf - v1_ll0:+.3f}  |  "
-                f"v2: {v2_n:3d} iters @ {np.mean(v2_times):8.2f} ms/iter  ΔLL={v2_llf - v2_ll0:+.3f}",
+                f"  run {run_idx+1:2d}/{N_RUNS}  "
+                f"v1={v1_t:.2f}ms  "
+                f"best tile={best_tile} @ {best_t:.2f}ms  "
+                f"({v1_t/best_t:.2f}x)",
                 flush=True,
             )
 
-        row = {
-            "N":                    N,
-            "K":                    K,
-            "D":                    D,
-            "v1_iter_time_mean_ms": round(float(np.mean(v1_avg_times)),  4),
-            "v1_iter_time_std_ms":  round(float(np.std(v1_avg_times)),   4),
-            "v1_n_iter_mean":       round(float(np.mean(v1_n_iters)),    2),
-            "v1_n_iter_std":        round(float(np.std(v1_n_iters)),     2),
-            "v1_ll_change_mean":    round(float(np.mean(v1_ll_changes)), 4),
-            "v1_ll_change_std":     round(float(np.std(v1_ll_changes)),  4),
-            "v2_iter_time_mean_ms": round(float(np.mean(v2_avg_times)),  4),
-            "v2_iter_time_std_ms":  round(float(np.std(v2_avg_times)),   4),
-            "v2_n_iter_mean":       round(float(np.mean(v2_n_iters)),    2),
-            "v2_n_iter_std":        round(float(np.std(v2_n_iters)),     2),
-            "v2_ll_change_mean":    round(float(np.mean(v2_ll_changes)), 4),
-            "v2_ll_change_std":     round(float(np.std(v2_ll_changes)),  4),
-            "speedup_x":            round(
-                float(np.mean(v1_avg_times)) / float(np.mean(v2_avg_times))
-                if float(np.mean(v2_avg_times)) > 0 else float("nan"), 4
-            ),
-        }
-        all_rows.append(row)
-        print(f"[{i+1}/{len(N_VALUES)}] N={N:,}  done.", flush=True)
+        # v1 baseline reference for speedup computation
+        v1_mean = float(np.mean(avg_times["v1"]))
+
+        for config in configs:
+            c_mean = float(np.mean(avg_times[config]))
+            row = {
+                "D":                    D,
+                "N":                    N,
+                "K":                    K,
+                "config":               config,
+                "iter_time_mean_ms":    round(c_mean, 4),
+                "iter_time_std_ms":     round(float(np.std(avg_times[config])), 4),
+                "n_iter_mean":          round(float(np.mean(n_iters[config])), 2),
+                "n_iter_std":           round(float(np.std(n_iters[config])), 2),
+                "ll_change_mean":       round(float(np.mean(ll_changes[config])), 4),
+                "ll_change_std":        round(float(np.std(ll_changes[config])), 4),
+                "speedup_x":            round(v1_mean / c_mean if c_mean > 0 else float("nan"), 4),
+            }
+            all_rows.append(row)
+
+        print(f"[D={D}  N={N:,}]  done.", flush=True)
 
     _print_table(all_rows)
 
