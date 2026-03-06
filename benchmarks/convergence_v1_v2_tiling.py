@@ -31,6 +31,8 @@ sys.path.insert(0, ROOT)
 
 from implementation import _v1, _v2_tiling
 
+DEVICE     = torch.device("cuda")
+
 K          = 5
 N          = 100_000
 D_VALUES   = [10, 20, 80]
@@ -76,6 +78,7 @@ def _run_em(X_t, p_init, module, chunk_N=None):
 
     for it in range(MAX_ITER):
         # --- timed block: E-step + M-step + Cholesky ---
+        torch.cuda.synchronize()
         t0 = time.perf_counter()
 
         lower, log_resp = module._expectation_step_precchol(
@@ -95,6 +98,7 @@ def _run_em(X_t, p_init, module, chunk_N=None):
 
         prec_chol = module._compute_precisions_cholesky(cov, COV_TYPE)
 
+        torch.cuda.synchronize()
         iter_times.append((time.perf_counter() - t0) * 1e3)
         # --- end timed block ---
 
@@ -168,6 +172,10 @@ def _print_table(all_rows):
 # ---------------------------------------------------------------------------
 
 def main():
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA not available — this benchmark requires a GPU.")
+    print(f"GPU: {torch.cuda.get_device_name(0)}", flush=True)
+
     rng = np.random.default_rng(42)
     torch.manual_seed(42)
 
@@ -181,7 +189,7 @@ def main():
         )
 
         # Warmup: a few untimed iterations on a small dummy dataset
-        Xw     = torch.randn(min(N, 1000), D, dtype=torch.float32)
+        Xw     = torch.randn(min(N, 1000), D, dtype=torch.float32, device=DEVICE)
         p_warm = _v1.TorchGaussianMixture(
             n_components=K, covariance_type=COV_TYPE,
             reg_covar=REG_COVAR, init_params="random_from_data",
@@ -210,7 +218,7 @@ def main():
 
         for run_idx in range(N_RUNS):
             X_np   = rng.standard_normal((N, D)).astype(np.float32)
-            X_t    = torch.from_numpy(X_np)
+            X_t    = torch.from_numpy(X_np).to(DEVICE)
 
             # Shared initialisation across all configs for this run
             p_init = _v1.TorchGaussianMixture(

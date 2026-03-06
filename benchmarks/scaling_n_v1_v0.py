@@ -24,6 +24,8 @@ from sklearn.mixture._gaussian_mixture import (
 from implementation import _v0_ref
 from implementation import _v1
 
+DEVICE = torch.device("cuda")
+
 K = 5
 D = 50
 N_VALUES = [10_000, 100_000, 1_000_000, 10_000_000]
@@ -59,7 +61,7 @@ def make_datasets(N, rng):
             prec_chol_sk[k] = np.linalg.solve(L, np.eye(D)).T
 
         # v0_ref / v1: precisions_cholesky = inv(L)  (lower-triangular, shape K×D×D)
-        covs_t = torch.from_numpy(covs_np)
+        covs_t = torch.from_numpy(covs_np).to(DEVICE)
         prec_chol_t = _v0_ref._compute_precisions_cholesky(covs_t, COV_TYPE)
 
         datasets.append({
@@ -68,9 +70,9 @@ def make_datasets(N, rng):
             "prec_chol_sk": prec_chol_sk,
             "covs_t": covs_t,
             "X_np": X_np,
-            "X_t": torch.from_numpy(X_np),
-            "means_t": torch.from_numpy(means_np),
-            "weights_t": torch.from_numpy(weights_np),
+            "X_t": torch.from_numpy(X_np).to(DEVICE),
+            "means_t": torch.from_numpy(means_np).to(DEVICE),
+            "weights_t": torch.from_numpy(weights_np).to(DEVICE),
             "prec_chol_t": prec_chol_t,
         })
     return datasets
@@ -166,6 +168,10 @@ def _print_table(all_rows):
 # ---------------------------------------------------------------------------
 
 def main():
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA not available — this benchmark requires a GPU.")
+    print(f"GPU: {torch.cuda.get_device_name(0)}", file=sys.stderr, flush=True)
+
     rng = np.random.default_rng(42)
 
     all_rows = []
@@ -254,16 +260,20 @@ def main():
             _, log_resp_sk = model._e_step(X_np)
             sk_e_times.append((time.perf_counter() - t0) * 1e3)
 
+            torch.cuda.synchronize()
             t0 = time.perf_counter()
             _, log_resp_v0 = _v0_ref._expectation_step_precchol(
                 X_t, ds["means_t"], ds["prec_chol_t"], ds["weights_t"], COV_TYPE
             )
+            torch.cuda.synchronize()
             v0_e_times.append((time.perf_counter() - t0) * 1e3)
 
+            torch.cuda.synchronize()
             t0 = time.perf_counter()
             _, log_resp_v1 = _v1._expectation_step_precchol(
                 X_t, ds["means_t"], ds["prec_chol_t"], ds["weights_t"], COV_TYPE
             )
+            torch.cuda.synchronize()
             v1_e_times.append((time.perf_counter() - t0) * 1e3)
 
             # --- M-step ---
@@ -275,16 +285,20 @@ def main():
             model._m_step(X_np, log_resp_sk)
             sk_m_times.append((time.perf_counter() - t0) * 1e3)
 
+            torch.cuda.synchronize()
             t0 = time.perf_counter()
             _v0_ref._maximization_step(
                 X_t, ds["means_t"], ds["covs_t"], ds["weights_t"], log_resp_v0, COV_TYPE
             )
+            torch.cuda.synchronize()
             v0_m_times.append((time.perf_counter() - t0) * 1e3)
 
+            torch.cuda.synchronize()
             t0 = time.perf_counter()
             _v1._maximization_step(
                 X_t, ds["means_t"], ds["covs_t"], ds["weights_t"], log_resp_v1, COV_TYPE
             )
+            torch.cuda.synchronize()
             v1_m_times.append((time.perf_counter() - t0) * 1e3)
 
             # --- Pre-compute intermediates (untimed).
@@ -306,12 +320,16 @@ def main():
             _estimate_log_gaussian_prob(X_np, ds["means_np"], ds["prec_chol_sk"], COV_TYPE)
             sk_mahal_times.append((time.perf_counter() - t0) * 1e3)
 
+            torch.cuda.synchronize()
             t0 = time.perf_counter()
             _v0_ref._estimate_log_gaussian_prob_full_precchol(X_t, ds["means_t"], ds["prec_chol_t"])
+            torch.cuda.synchronize()
             v0_mahal_times.append((time.perf_counter() - t0) * 1e3)
 
+            torch.cuda.synchronize()
             t0 = time.perf_counter()
             _v1._estimate_log_gaussian_prob_full_precchol(X_t, ds["means_t"], ds["prec_chol_t"])
+            torch.cuda.synchronize()
             v1_mahal_times.append((time.perf_counter() - t0) * 1e3)
 
             # --- Mean update (M-step) ---
@@ -319,12 +337,16 @@ def main():
             _sk_mean_update(resp_np, X_np, nk_np)
             sk_mean_times.append((time.perf_counter() - t0) * 1e3)
 
+            torch.cuda.synchronize()
             t0 = time.perf_counter()
             _torch_mean_update(resp_t_v0, X_t, nk_t_v0)
+            torch.cuda.synchronize()
             v0_mean_times.append((time.perf_counter() - t0) * 1e3)
 
+            torch.cuda.synchronize()
             t0 = time.perf_counter()
             _torch_mean_update(resp_t_v1, X_t, nk_t_v1)
+            torch.cuda.synchronize()
             v1_mean_times.append((time.perf_counter() - t0) * 1e3)
 
             # --- Covariance update (M-step); output reused as cholesky input ---
@@ -332,12 +354,16 @@ def main():
             new_cov_sk = _sk_cov_update(X_np, resp_np, nk_np, means_np, K, D, reg_covar=1e-4)
             sk_cov_times.append((time.perf_counter() - t0) * 1e3)
 
+            torch.cuda.synchronize()
             t0 = time.perf_counter()
             new_cov_v0 = _v0_cov_update(X_t, resp_t_v0, nk_t_v0, means_t_v0, K, D, reg_covar=1e-4)
+            torch.cuda.synchronize()
             v0_cov_times.append((time.perf_counter() - t0) * 1e3)
 
+            torch.cuda.synchronize()
             t0 = time.perf_counter()
             new_cov_v1 = _v1_cov_update(X_t, resp_t_v1, nk_t_v1, means_t_v1, K, D, reg_covar=1e-4)
+            torch.cuda.synchronize()
             v1_cov_times.append((time.perf_counter() - t0) * 1e3)
 
             # --- Cholesky factorization (M-step) ---
@@ -345,12 +371,16 @@ def main():
             _compute_precision_cholesky(new_cov_sk, COV_TYPE)
             sk_chol_times.append((time.perf_counter() - t0) * 1e3)
 
+            torch.cuda.synchronize()
             t0 = time.perf_counter()
             _v0_ref._compute_precisions_cholesky(new_cov_v0, COV_TYPE)
+            torch.cuda.synchronize()
             v0_chol_times.append((time.perf_counter() - t0) * 1e3)
 
+            torch.cuda.synchronize()
             t0 = time.perf_counter()
             _v1._compute_precisions_cholesky(new_cov_v1, COV_TYPE)
+            torch.cuda.synchronize()
             v1_chol_times.append((time.perf_counter() - t0) * 1e3)
 
         print(f"[{i+1}/{len(N_VALUES)}] N={N:,} — done.", file=sys.stderr, flush=True)

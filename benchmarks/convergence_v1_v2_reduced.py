@@ -45,6 +45,8 @@ from implementation._v1 import (
 )
 from implementation._v2_reduced_covariance_updates import _maximization_step_reduced
 
+DEVICE    = torch.device("cuda")
+
 K         = 5
 N_RUNS    = 30
 COV_TYPE  = "full"
@@ -107,6 +109,7 @@ def _run_em(X_t, p_init, cov_freq):
         update_cov = (it % cov_freq == 0)
 
         # --- timed block: E-step + M-step + Cholesky ---
+        torch.cuda.synchronize()
         t0 = time.perf_counter()
 
         lower, log_resp = _expectation_step_precchol(
@@ -118,6 +121,7 @@ def _run_em(X_t, p_init, cov_freq):
         )
         prec_chol = _compute_precisions_cholesky(cov, COV_TYPE)
 
+        torch.cuda.synchronize()
         iter_times.append((time.perf_counter() - t0) * 1e3)
         # --- end timed block ---
 
@@ -199,6 +203,10 @@ def _print_table(all_rows):
 # ---------------------------------------------------------------------------
 
 def main():
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA not available — this benchmark requires a GPU.")
+    print(f"GPU: {torch.cuda.get_device_name(0)}", flush=True)
+
     rng = np.random.default_rng(42)
     torch.manual_seed(42)
 
@@ -212,7 +220,7 @@ def main():
         )
 
         # Warmup: a few untimed iterations on a small dummy dataset
-        Xw   = torch.randn(min(N, 1000), D, dtype=torch.float32)
+        Xw   = torch.randn(min(N, 1000), D, dtype=torch.float32, device=DEVICE)
         p_w  = _BaseGMM(
             n_components=K, covariance_type=COV_TYPE,
             reg_covar=REG_COVAR, init_params="random_from_data",
@@ -225,57 +233,55 @@ def main():
             )
             _compute_precisions_cholesky(cv, COV_TYPE)
 
-        for freq in COV_FREQS:
-            freq_label = f"freq={freq}" + (" [v1]" if freq == 1 else "")
-            print(f"  {freq_label}", flush=True)
+        # Accumulators keyed by freq
+        avg_times_all   = {f: [] for f in COV_FREQS}
+        n_iters_all     = {f: [] for f in COV_FREQS}
+        cov_updates_all = {f: [] for f in COV_FREQS}
+        ll_changes_all  = {f: [] for f in COV_FREQS}
+        total_times_all = {f: [] for f in COV_FREQS}
 
-            avg_times_per_run   = []
-            n_iters_per_run     = []
-            cov_updates_per_run = []
-            ll_changes_per_run  = []
-            total_times_per_run = []
+        for run_idx in range(N_RUNS):
+            # All frequencies share the same dataset and initialisation for this run
+            X_np   = rng.standard_normal((N, D)).astype(np.float32)
+            X_t    = torch.from_numpy(X_np).to(DEVICE)
+            p_init = _BaseGMM(
+                n_components=K, covariance_type=COV_TYPE,
+                reg_covar=REG_COVAR, init_params="random_from_data",
+            )._initialize(X_t)
 
-            for run_idx in range(N_RUNS):
-                X_np = rng.standard_normal((N, D)).astype(np.float32)
-                X_t  = torch.from_numpy(X_np)
-
-                p_init = _BaseGMM(
-                    n_components=K, covariance_type=COV_TYPE,
-                    reg_covar=REG_COVAR, init_params="random_from_data",
-                )._initialize(X_t)
-
+            run_summary = []
+            for freq in COV_FREQS:
                 times, n_iter, cov_upd, ll0, llf = _run_em(X_t, p_init, freq)
-
-                avg_times_per_run.append(float(np.mean(times)))
-                n_iters_per_run.append(n_iter)
-                cov_updates_per_run.append(cov_upd)
-                ll_changes_per_run.append(llf - ll0)
-                total_times_per_run.append(float(np.sum(times)))
-
-                print(
-                    f"    run {run_idx+1:2d}/{N_RUNS}  "
-                    f"{n_iter:3d} iters  cov_updates={cov_upd:3d}  "
-                    f"avg {float(np.mean(times)):8.2f} ms/iter  "
-                    f"total {float(np.sum(times)):8.1f} ms  "
-                    f"ΔLL={llf - ll0:+.3f}",
-                    flush=True,
+                avg_times_all[freq].append(float(np.mean(times)))
+                n_iters_all[freq].append(n_iter)
+                cov_updates_all[freq].append(cov_upd)
+                ll_changes_all[freq].append(llf - ll0)
+                total_times_all[freq].append(float(np.sum(times)))
+                run_summary.append(
+                    f"freq={freq}: {n_iter}it {float(np.sum(times)):.1f}ms total"
                 )
 
+            print(
+                f"  run {run_idx+1:2d}/{N_RUNS}  " + "  |  ".join(run_summary),
+                flush=True,
+            )
+
+        for freq in COV_FREQS:
             row = {
                 "D":                    D,
                 "N":                    N,
                 "K":                    K,
                 "cov_freq":             freq,
-                "iter_time_mean_ms":    round(float(np.mean(avg_times_per_run)),   4),
-                "iter_time_std_ms":     round(float(np.std(avg_times_per_run)),    4),
-                "n_iter_mean":          round(float(np.mean(n_iters_per_run)),     2),
-                "n_iter_std":           round(float(np.std(n_iters_per_run)),      2),
-                "cov_updates_mean":     round(float(np.mean(cov_updates_per_run)), 2),
-                "cov_updates_std":      round(float(np.std(cov_updates_per_run)),  2),
-                "total_time_mean_ms":   round(float(np.mean(total_times_per_run)), 2),
-                "total_time_std_ms":    round(float(np.std(total_times_per_run)),  2),
-                "ll_change_mean":       round(float(np.mean(ll_changes_per_run)),  4),
-                "ll_change_std":        round(float(np.std(ll_changes_per_run)),   4),
+                "iter_time_mean_ms":    round(float(np.mean(avg_times_all[freq])),   4),
+                "iter_time_std_ms":     round(float(np.std(avg_times_all[freq])),    4),
+                "n_iter_mean":          round(float(np.mean(n_iters_all[freq])),     2),
+                "n_iter_std":           round(float(np.std(n_iters_all[freq])),      2),
+                "cov_updates_mean":     round(float(np.mean(cov_updates_all[freq])), 2),
+                "cov_updates_std":      round(float(np.std(cov_updates_all[freq])),  2),
+                "total_time_mean_ms":   round(float(np.mean(total_times_all[freq])), 2),
+                "total_time_std_ms":    round(float(np.std(total_times_all[freq])),  2),
+                "ll_change_mean":       round(float(np.mean(ll_changes_all[freq])),  4),
+                "ll_change_std":        round(float(np.std(ll_changes_all[freq])),   4),
             }
             all_rows.append(row)
 
