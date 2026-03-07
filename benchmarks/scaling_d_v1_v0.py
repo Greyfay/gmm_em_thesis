@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """E-step and M-step runtime benchmark: sklearn vs _v0_ref vs _v1.
-Fixed: K=5, N=1000. D in [5, 10, 20, 50, 100, 500].
+Fixed: K=5, N=10000. D in [5, 10, 20, 50, 100, 500].
 30 timed runs per configuration.
 Outputs CSV to stdout; progress and summary table to stderr.
 """
@@ -27,7 +27,7 @@ from implementation import _v1
 DEVICE = torch.device("cuda")
 
 K = 5
-N = 1000
+N = 10_000
 D_VALUES = [5, 10, 20, 50, 100, 500]
 N_RUNS = 30
 COV_TYPE = "full"
@@ -103,14 +103,13 @@ def _sk_cov_update(X_np, resp_np, nk_np, new_means_np, K, D, reg_covar=1e-6):
 
 
 def _v0_cov_update(X_t, resp_t, nk_t, new_means_t, K, D, reg_covar=1e-4):
-    """torch loop matching v0_ref's full covariance update."""
-    diff = X_t.unsqueeze(1) - new_means_t.unsqueeze(0)  # (N,K,D)
+    """torch loop matching v0_ref's full covariance update (per-component, no (N,K,D) tensor)."""
     new_cov = torch.empty((K, D, D), device=X_t.device, dtype=X_t.dtype)
     eye = torch.eye(D, device=X_t.device, dtype=X_t.dtype)
     for k in range(K):
-        wdiff = diff[:, k, :] * resp_t[:, k].unsqueeze(1)
-        new_cov[k] = (wdiff.T @ diff[:, k, :]) / nk_t[k]
-    # Add regularisation in one shot outside the loop, matching v0_ref exactly.
+        diff_k  = X_t - new_means_t[k]                 # (N, D) — one component at a time
+        wdiff_k = diff_k * resp_t[:, k].unsqueeze(1)   # (N, D)
+        new_cov[k] = (wdiff_k.T @ diff_k) / nk_t[k]
     return new_cov + reg_covar * eye
 
 
