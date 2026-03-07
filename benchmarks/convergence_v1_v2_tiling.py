@@ -254,6 +254,9 @@ def main():
                 flush=True,
             )
 
+            del X_t
+            torch.cuda.empty_cache()
+
         # v1 baseline reference for speedup computation
         v1_mean = float(np.mean(avg_times["v1"]))
 

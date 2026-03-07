@@ -70,7 +70,8 @@ def make_datasets(N, rng):
             "prec_chol_sk": prec_chol_sk,
             "covs_t": covs_t,
             "X_np": X_np,
-            "X_t": torch.from_numpy(X_np).to(DEVICE),
+            # X_t is NOT pre-loaded onto GPU — created per-run to avoid holding
+            # N_RUNS large tensors in GPU memory simultaneously.
             "means_t": torch.from_numpy(means_np).to(DEVICE),
             "weights_t": torch.from_numpy(weights_np).to(DEVICE),
             "prec_chol_t": prec_chol_t,
@@ -183,6 +184,7 @@ def main():
 
         # --- Warmup on first dataset (untimed) ---
         ds0 = datasets[0]
+        X_t_wu = torch.from_numpy(ds0["X_np"]).to(DEVICE)
 
         # GaussianMixture is constructed once here and reused for the whole N block.
         # sklearn default reg_covar=1e-6, but we use 1e-4 for stability
@@ -195,17 +197,17 @@ def main():
         model._m_step(ds0["X_np"], wu_log_resp_sk)
 
         _, wu_log_resp_v0 = _v0_ref._expectation_step_precchol(
-            ds0["X_t"], ds0["means_t"], ds0["prec_chol_t"], ds0["weights_t"], COV_TYPE
+            X_t_wu, ds0["means_t"], ds0["prec_chol_t"], ds0["weights_t"], COV_TYPE
         )
         _v0_ref._maximization_step(
-            ds0["X_t"], ds0["means_t"], ds0["covs_t"], ds0["weights_t"], wu_log_resp_v0, COV_TYPE
+            X_t_wu, ds0["means_t"], ds0["covs_t"], ds0["weights_t"], wu_log_resp_v0, COV_TYPE
         )
 
         _, wu_log_resp_v1 = _v1._expectation_step_precchol(
-            ds0["X_t"], ds0["means_t"], ds0["prec_chol_t"], ds0["weights_t"], COV_TYPE
+            X_t_wu, ds0["means_t"], ds0["prec_chol_t"], ds0["weights_t"], COV_TYPE
         )
         _v1._maximization_step(
-            ds0["X_t"], ds0["means_t"], ds0["covs_t"], ds0["weights_t"], wu_log_resp_v1, COV_TYPE
+            X_t_wu, ds0["means_t"], ds0["covs_t"], ds0["weights_t"], wu_log_resp_v1, COV_TYPE
         )
 
         # Warmup sub-operations — each implementation uses its own log_resp.
@@ -215,23 +217,26 @@ def main():
 
         wu_resp_t_v0  = wu_log_resp_v0.exp()
         wu_nk_t_v0    = wu_resp_t_v0.sum(0) + _NK_EPS
-        wu_means_t_v0 = _torch_mean_update(wu_resp_t_v0, ds0["X_t"], wu_nk_t_v0)
+        wu_means_t_v0 = _torch_mean_update(wu_resp_t_v0, X_t_wu, wu_nk_t_v0)
 
         wu_resp_t_v1  = wu_log_resp_v1.exp()
         wu_nk_t_v1    = wu_resp_t_v1.sum(0) + _NK_EPS
-        wu_means_t_v1 = _torch_mean_update(wu_resp_t_v1, ds0["X_t"], wu_nk_t_v1)
+        wu_means_t_v1 = _torch_mean_update(wu_resp_t_v1, X_t_wu, wu_nk_t_v1)
 
         _estimate_log_gaussian_prob(ds0["X_np"], ds0["means_np"], ds0["prec_chol_sk"], COV_TYPE)
-        _v0_ref._estimate_log_gaussian_prob_full_precchol(ds0["X_t"], ds0["means_t"], ds0["prec_chol_t"])
-        _v1._estimate_log_gaussian_prob_full_precchol(ds0["X_t"], ds0["means_t"], ds0["prec_chol_t"])
+        _v0_ref._estimate_log_gaussian_prob_full_precchol(X_t_wu, ds0["means_t"], ds0["prec_chol_t"])
+        _v1._estimate_log_gaussian_prob_full_precchol(X_t_wu, ds0["means_t"], ds0["prec_chol_t"])
 
         wu_new_cov_sk = _sk_cov_update(ds0["X_np"], wu_resp_np, wu_nk_np, wu_means_np, K, D, reg_covar=1e-4)
-        wu_new_cov_v0 = _v0_cov_update(ds0["X_t"], wu_resp_t_v0, wu_nk_t_v0, wu_means_t_v0, K, D, reg_covar=1e-4)
-        wu_new_cov_v1 = _v1_cov_update(ds0["X_t"], wu_resp_t_v1, wu_nk_t_v1, wu_means_t_v1, K, D, reg_covar=1e-4)
+        wu_new_cov_v0 = _v0_cov_update(X_t_wu, wu_resp_t_v0, wu_nk_t_v0, wu_means_t_v0, K, D, reg_covar=1e-4)
+        wu_new_cov_v1 = _v1_cov_update(X_t_wu, wu_resp_t_v1, wu_nk_t_v1, wu_means_t_v1, K, D, reg_covar=1e-4)
 
         _compute_precision_cholesky(wu_new_cov_sk, COV_TYPE)
         _v0_ref._compute_precisions_cholesky(wu_new_cov_v0, COV_TYPE)
         _v1._compute_precisions_cholesky(wu_new_cov_v1, COV_TYPE)
+
+        del X_t_wu
+        torch.cuda.empty_cache()
 
         # --- Timing lists ---
         sk_e_times, v0_e_times, v1_e_times             = [], [], []
@@ -247,7 +252,7 @@ def main():
                 file=sys.stderr,
                 flush=True,
             )
-            X_t  = ds["X_t"]
+            X_t  = torch.from_numpy(ds["X_np"]).to(DEVICE)
             X_np = ds["X_np"]
 
             # Reuse the single model instance; just overwrite the parameters.
@@ -383,6 +388,9 @@ def main():
             torch.cuda.synchronize()
             v1_chol_times.append((time.perf_counter() - t0) * 1e3)
 
+            del X_t
+            torch.cuda.empty_cache()
+
         print(f"[{i+1}/{len(N_VALUES)}] N={N:,} — done.", file=sys.stderr, flush=True)
 
         row = {"N": N, "D": D, "K": K}
@@ -396,6 +404,8 @@ def main():
         ]:
             row[f"{prefix}_mean_ms"], row[f"{prefix}_std_ms"] = _agg(lst)
         all_rows.append(row)
+        del datasets
+        torch.cuda.empty_cache()
 
     _print_table(all_rows)
 

@@ -269,6 +269,9 @@ def main():
                 flush=True,
             )
 
+            del X_t
+            torch.cuda.empty_cache()
+
         for freq in COV_FREQS:
             row = {
                 "D":                    D,
