@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """E-step and M-step runtime benchmark: sklearn vs _v0_ref vs _v1.
-Fixed: K=5, D=50. N in [1e4, 1e5, 1e6, 1e7].
-10 timed runs per configuration.
+Fixed: K=5, D=50. N in [1e4, 1e5, 1e6, 5e6].
+30 timed runs per configuration.
 Outputs CSV to stdout; progress and summary table to stderr.
 """
 

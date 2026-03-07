@@ -71,7 +71,8 @@ def _run_em(X_t, p_init, module, chunk_N=None):
     )
 
     prev_lower = float("-inf")
-    iter_times = []
+    iter_times   = []
+    peak_mem_mbs = []
     initial_ll = None
     final_ll   = None
     n_iter     = MAX_ITER
@@ -85,6 +86,9 @@ def _run_em(X_t, p_init, module, chunk_N=None):
             X_t, p.means, p.prec_chol, p.weights, COV_TYPE
         )
 
+        # Reset peak counter before M-step to isolate its memory footprint.
+        # v1 materialises a full (N, K, D) tensor here; v2_tiling streams in chunks.
+        torch.cuda.reset_peak_memory_stats()
         if chunk_N is not None:
             means, cov, weights = module._maximization_step(
                 X_t, p.means, p.cov, p.weights, log_resp, COV_TYPE,
@@ -95,6 +99,7 @@ def _run_em(X_t, p_init, module, chunk_N=None):
                 X_t, p.means, p.cov, p.weights, log_resp, COV_TYPE,
                 reg_covar=REG_COVAR,
             )
+        peak_mem_mbs.append(torch.cuda.max_memory_allocated() / 1024**2)
 
         prec_chol = module._compute_precisions_cholesky(cov, COV_TYPE)
 
@@ -120,7 +125,7 @@ def _run_em(X_t, p_init, module, chunk_N=None):
     if n_iter == MAX_ITER:
         print(f"  WARNING: did not converge within {MAX_ITER} iterations", flush=True)
 
-    return iter_times, n_iter, initial_ll, final_ll
+    return iter_times, n_iter, initial_ll, final_ll, peak_mem_mbs
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +133,7 @@ def _run_em(X_t, p_init, module, chunk_N=None):
 # ---------------------------------------------------------------------------
 
 def _print_table(all_rows):
-    W   = 106
+    W   = 126
     sep = "-" * W
 
     print()
@@ -143,6 +148,7 @@ def _print_table(all_rows):
         f"{'ms/iter':>16}  "
         f"{'speedup':>8}  "
         f"{'n_iter':>12}  "
+        f"{'M-step mem (MB)':>18}  "
         f"{'ΔLL':>16}"
     )
     print(header)
@@ -153,16 +159,18 @@ def _print_table(all_rows):
             print(sep)
             prev_D = row["D"]
 
-        t_s  = f"{row['iter_time_mean_ms']:.3f} ± {row['iter_time_std_ms']:.3f}"
-        n_s  = f"{row['n_iter_mean']:.1f} ± {row['n_iter_std']:.1f}"
-        ll_s = f"{row['ll_change_mean']:.3f} ± {row['ll_change_std']:.3f}"
-        spd  = f"{row['speedup_x']:.3f}x" if not np.isnan(row["speedup_x"]) else "  —  "
+        t_s   = f"{row['iter_time_mean_ms']:.3f} ± {row['iter_time_std_ms']:.3f}"
+        n_s   = f"{row['n_iter_mean']:.1f} ± {row['n_iter_std']:.1f}"
+        ll_s  = f"{row['ll_change_mean']:.3f} ± {row['ll_change_std']:.3f}"
+        mem_s = f"{row['peak_mem_mean_mb']:.1f} ± {row['peak_mem_std_mb']:.1f}"
+        spd   = f"{row['speedup_x']:.3f}x" if not np.isnan(row["speedup_x"]) else "  —  "
 
         print(
             f"  {row['D']:>4}  {row['config']:>12}  "
             f"{t_s:>16}  "
             f"{spd:>8}  "
             f"{n_s:>12}  "
+            f"{mem_s:>18}  "
             f"{ll_s:>16}"
         )
 
@@ -218,6 +226,7 @@ def main():
         avg_times  = {c: [] for c in configs}
         n_iters    = {c: [] for c in configs}
         ll_changes = {c: [] for c in configs}
+        peak_mems  = {c: [] for c in configs}  # mean M-step peak memory per run (MB)
 
         for run_idx in range(N_RUNS):
             X_np   = rng.standard_normal((N, D)).astype(np.float32)
@@ -230,18 +239,20 @@ def main():
             )._initialize(X_t)
 
             # v1 baseline
-            times, n, ll0, llf = _run_em(X_t, p_init, _v1, chunk_N=None)
+            times, n, ll0, llf, peak_mbs = _run_em(X_t, p_init, _v1, chunk_N=None)
             avg_times["v1"].append(float(np.mean(times)))
             n_iters["v1"].append(n)
             ll_changes["v1"].append(llf - ll0)
+            peak_mems["v1"].append(float(np.mean(peak_mbs)))
 
             # v2_tiling with each tile size
             for tile in TILE_SIZES:
                 label = f"tile={tile}"
-                times, n, ll0, llf = _run_em(X_t, p_init, _v2_tiling, chunk_N=tile)
+                times, n, ll0, llf, peak_mbs = _run_em(X_t, p_init, _v2_tiling, chunk_N=tile)
                 avg_times[label].append(float(np.mean(times)))
                 n_iters[label].append(n)
                 ll_changes[label].append(llf - ll0)
+                peak_mems[label].append(float(np.mean(peak_mbs)))
 
             v1_t      = avg_times["v1"][-1]
             best_tile = min(TILE_SIZES, key=lambda t: avg_times[f"tile={t}"][-1])
@@ -273,6 +284,8 @@ def main():
                 "n_iter_std":           round(float(np.std(n_iters[config])), 2),
                 "ll_change_mean":       round(float(np.mean(ll_changes[config])), 4),
                 "ll_change_std":        round(float(np.std(ll_changes[config])), 4),
+                "peak_mem_mean_mb":     round(float(np.mean(peak_mems[config])), 2),
+                "peak_mem_std_mb":      round(float(np.std(peak_mems[config])), 2),
                 "speedup_x":            round(v1_mean / c_mean if c_mean > 0 else float("nan"), 4),
             }
             all_rows.append(row)
