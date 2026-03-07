@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """E-step and M-step runtime benchmark: sklearn vs _v0_ref vs _v1.
-Fixed: K=5, D=50. N in [1e4, 1e5, 5e5, 1e6, 2e6].
+Fixed: K=10, D=50. N in [1e4, 1e5, 5e5, 1e6].
 30 timed runs per configuration.
 Outputs CSV to stdout; progress and summary table to stderr.
 """
@@ -26,9 +26,9 @@ from implementation import _v1
 
 DEVICE = torch.device("cuda")
 
-K = 5
+K = 10
 D = 50
-N_VALUES = [10_000, 100_000, 500_000, 1_000_000, 2_000_000]
+N_VALUES = [10_000, 100_000, 500_000, 1_000_000]
 N_RUNS = 30
 COV_TYPE = "full"
 

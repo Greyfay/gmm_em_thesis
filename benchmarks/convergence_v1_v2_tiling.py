@@ -33,7 +33,7 @@ from implementation import _v1, _v2_tiling
 
 DEVICE     = torch.device("cuda")
 
-K          = 5
+K          = 10
 N          = 100_000
 D_VALUES   = [10, 20, 80]
 N_RUNS     = 30

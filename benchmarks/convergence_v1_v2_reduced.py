@@ -47,7 +47,7 @@ from implementation._v2_reduced_covariance_updates import _maximization_step_red
 
 DEVICE    = torch.device("cuda")
 
-K         = 5
+K         = 10
 N_RUNS    = 30
 COV_TYPE  = "full"
 REG_COVAR = 1e-4
