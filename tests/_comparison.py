@@ -271,163 +271,165 @@ def test_m_step_correctness():
 
 def test_end_to_end():
     """
-    All four PyTorch implementations and sklearn are started from the exact same
-    initial means and precisions (derived from a single sklearn KMeans run) and
-    run to convergence. Their final lower bounds and parameters are compared.
+    _v0_ref and _v1 are started from the exact same initial means and precisions
+    (derived from a single sklearn KMeans run) and run to convergence, across all
+    four covariance types.
 
-    With identical init, differences should only arise from float32 arithmetic
-    (if dtype=float32 is used) or numerical quirks — we expect very tight
-    agreement on the lower bound.
+    Assertions per covariance type:
+      (a) EM trajectory is monotonically non-decreasing (core EM invariant).
+      (b) Both PyTorch models converge within MAX_ITER iterations.
+      (c) LL is finite.
+      (d) _v0_ref and _v1 agree on LL to 1e-8 (same algorithm, same init —
+          any divergence indicates a bug in one of them).
+
+    Note: LL vs sklearn is informational only. Even from identical init,
+    floating-point differences between sklearn's C-accelerated EM and PyTorch
+    steer trajectories to different local optima. The E/M step math is verified
+    to machine precision in Tests 1 & 2; parameter-level agreement under identical
+    init is verified in Test 5 (K=1 unique optimum).
     """
     print("=" * 80)
     print(f"TEST 3: End-to-End with Identical Init  (seed={SEED_E2E})")
     print("=" * 80)
 
     np.random.seed(SEED_E2E)
-    N, D, K = 300, 8, 4
-    COV_TYPE = "diag"
+    N, D, K   = 300, 8, 4
     REG_COVAR = 1e-6
-    MAX_ITER = 200
-    TOL = 1e-4
+    MAX_ITER  = 300
+    TOL       = 1e-4
 
-    # Generate data
     X_np = np.random.randn(N, D).astype(np.float64)
     X_t  = torch.from_numpy(X_np)
 
-    # ── Identical initialization via sklearn KMeans ──────────────────────
     km = KMeans(n_clusters=K, n_init=1, random_state=SEED_E2E).fit(X_np)
     init_means_np = km.cluster_centers_.astype(np.float64)  # (K, D)
 
-    # Compute initial precisions from hard KMeans assignments
-    init_prec_np = _sk_init_params_from_means(X_np, init_means_np, COV_TYPE, REG_COVAR)
+    overall_failed = []
 
-    init_means_t = torch.from_numpy(init_means_np)
-    init_prec_t  = torch.from_numpy(init_prec_np)
+    for COV_TYPE in ("spherical", "diag", "tied", "full"):
+        print(f"\n  {'─' * 60}")
+        print(f"  [{COV_TYPE}]")
+        print(f"  {'─' * 60}")
 
-    # ── sklearn GMM from the same init means + precisions ────────────────
-    sk_gmm = SklearnGMM(
-        n_components=K,
-        covariance_type=COV_TYPE,
-        reg_covar=REG_COVAR,
-        max_iter=MAX_ITER,
-        tol=TOL,
-        n_init=1,
-        init_params="kmeans",       # overridden by means_init below
-        random_state=SEED_E2E,
-        means_init=init_means_np,
-        precisions_init=init_prec_np,
-    )
-    sk_gmm.fit(X_np)
-    sk_ll    = sk_gmm.lower_bound_
-    sk_iter  = sk_gmm.n_iter_
-    sk_means = sk_gmm.means_
+        init_prec_np = _sk_init_params_from_means(X_np, init_means_np, COV_TYPE, REG_COVAR)
+        init_means_t = torch.from_numpy(init_means_np)
+        init_prec_t  = torch.from_numpy(init_prec_np)
 
-    print(f"\n  sklearn: ll={sk_ll:.6f}  iter={sk_iter}")
-
-    # ── Helper: build and run a PyTorch GMM from identical init ──────────
-    def run_torch_gmm(label, GMM_cls, **extra_kwargs):
-        gmm = GMM_cls(
+        sk_gmm = SklearnGMM(
             n_components=K,
             covariance_type=COV_TYPE,
             reg_covar=REG_COVAR,
             max_iter=MAX_ITER,
             tol=TOL,
             n_init=1,
-            init_params="kmeans",   # overridden by means_init below
-            device=None,
-            dtype=torch.float64,
-            means_init=init_means_t.clone(),
-            precisions_init=init_prec_t.clone(),
-            **extra_kwargs,
+            init_params="kmeans",
+            random_state=SEED_E2E,
+            means_init=init_means_np,
+            precisions_init=init_prec_np,
         )
-        gmm.fit(X_t)
-        return gmm
+        sk_gmm.fit(X_np)
+        sk_ll    = sk_gmm.lower_bound_
+        sk_iter  = sk_gmm.n_iter_
+        sk_means = sk_gmm.means_
 
-    # Only _v0_ref and _v1 are included here — the v2 variants are experimental
-    # and their likelihood behaviour is a separate topic of investigation.
-    results = {}
+        print(f"\n  sklearn: ll={sk_ll:.6f}  iter={sk_iter}"
+              f"  converged={'yes' if sk_gmm.converged_ else 'NO'}")
 
-    print(f"\n  [_v0_ref]")
-    results["_v0_ref"] = run_torch_gmm("_v0_ref", v0.TorchGaussianMixture)
+        def run_torch_gmm(GMM_cls, **extra_kwargs):
+            gmm = GMM_cls(
+                n_components=K,
+                covariance_type=COV_TYPE,
+                reg_covar=REG_COVAR,
+                max_iter=MAX_ITER,
+                tol=TOL,
+                n_init=1,
+                init_params="kmeans",
+                device=None,
+                dtype=torch.float64,
+                means_init=init_means_t.clone(),
+                precisions_init=init_prec_t.clone(),
+                **extra_kwargs,
+            )
+            gmm.fit(X_t)
+            return gmm
 
-    print(f"  [_v1]")
-    results["_v1"] = run_torch_gmm("_v1", v1.TorchGaussianMixture)
+        results = {
+            "_v0_ref": run_torch_gmm(v0.TorchGaussianMixture),
+            "_v1":     run_torch_gmm(v1.TorchGaussianMixture),
+        }
 
-    # ── Compare ──────────────────────────────────────────────────────────
-    # NOTE on means comparison:
-    # Even with identical initialization, tiny floating-point differences
-    # between sklearn's C-accelerated EM and PyTorch's operations cause
-    # diverging EM trajectories that converge to different local optima.
-    # With a flat likelihood landscape near convergence, parameters can
-    # differ substantially (e.g. 4e-02 in means) while the LL difference
-    # is negligible (<1e-5 relative). Comparing raw means is therefore not
-    # a meaningful correctness check.
-    #
-    # Instead we verify:
-    #   (a) LL is at least as good as sklearn (PyTorch should find >= sklearn's optimum).
-    #   (b) EM trajectory is monotonically non-decreasing (core correctness invariant).
-    #   (c) All four PyTorch implementations agree with each other exactly
-    #       (they share init; any divergence would indicate a bug in one of them).
+        print(f"\n  {'Implementation':<20} {'lower_bound':>14} {'ll_diff vs sk':>15}"
+              f" {'converged':>10} {'iter':>6}")
+        print(f"  {'sklearn':<20} {sk_ll:>14.6f} {'—':>15}"
+              f" {'yes' if sk_gmm.converged_ else 'NO':>10} {sk_iter:>6}")
 
-    # The LL comparison against sklearn is intentionally omitted here.
-    # Even from identical init, floating-point differences between sklearn's
-    # C-accelerated EM and PyTorch steer them to different local optima — the
-    # difference can be positive or negative depending on the seed and is not
-    # bounded by TOL. The E/M step math is already verified in Tests 1 & 2.
-    # What we assert here:
-    #   (a) Monotonicity — the EM invariant holds for each implementation.
-    #   (b) Inter-implementation consistency — all four PyTorch impls agree,
-    #       since they share the same init and use the same math.
-    #   (c) LL is finite — basic numerical sanity.
-    print(f"\n  {'Implementation':<20} {'lower_bound':>14} {'ll_diff vs sk':>15} {'monotone':>9} {'iter':>6}")
-    print(f"  {'sklearn':<20} {sk_ll:>14.6f} {'—':>15} {'—':>9} {sk_iter:>6}")
+        failed        = []
+        reference_ll   = None
+        reference_name = None
 
-    failed = []
-    reference_ll   = None   # first PyTorch result, used for inter-impl consistency check
-    reference_name = None
+        for name, gmm in results.items():
+            ll      = gmm.lower_bound_
+            ll_diff = ll - sk_ll
+            history = gmm.lower_bounds_
 
-    for name, gmm in results.items():
-        ll      = gmm.lower_bound_
-        ll_diff = ll - sk_ll          # informational only — not asserted
-        history = gmm.lower_bounds_
+            # (a) Monotonicity
+            diffs      = np.diff(history)
+            monotone   = bool(np.all(diffs >= -1e-8))
+            worst_drop = float(np.min(diffs)) if len(diffs) > 0 else 0.0
 
-        # (a) Monotonicity
-        diffs      = np.diff(history)
-        monotone   = bool(np.all(diffs >= -1e-8))   # allow tiny float noise
-        worst_drop = float(np.min(diffs)) if len(diffs) > 0 else 0.0
+            # (b) Convergence
+            converged = gmm.converged_
 
-        print(f"  {name:<20} {ll:>14.6f} {ll_diff:>+15.2e} {'yes' if monotone else 'NO':>9} {gmm.n_iter_:>6}")
-        if not monotone:
-            failed.append(f"{name}: EM is not monotone; worst drop = {worst_drop:.2e}")
+            print(f"  {name:<20} {ll:>14.6f} {ll_diff:>+15.2e}"
+                  f" {'yes' if converged else 'NO':>10} {gmm.n_iter_:>6}")
 
-        # (b) Inter-implementation consistency
-        if reference_ll is None:
-            reference_ll   = ll
-            reference_name = name
-        else:
-            inter_diff = abs(ll - reference_ll)
-            if inter_diff > 1e-8:
+            if not monotone:
                 failed.append(
-                    f"{name} vs {reference_name}: LL disagreement = {inter_diff:.2e}"
+                    f"[{COV_TYPE}] {name}: not monotone; worst drop = {worst_drop:.2e}"
                 )
+            if not converged:
+                failed.append(
+                    f"[{COV_TYPE}] {name}: did not converge in {gmm.n_iter_} iterations"
+                )
+            if not np.isfinite(ll):
+                failed.append(f"[{COV_TYPE}] {name}: LL is not finite ({ll})")
 
-        # (c) Numerical sanity
-        if not np.isfinite(ll):
-            failed.append(f"{name}: LL is not finite ({ll})")
+            # (d) Inter-implementation consistency
+            if reference_ll is None:
+                reference_ll   = ll
+                reference_name = name
+            else:
+                inter_diff = abs(ll - reference_ll)
+                if inter_diff > 1e-8:
+                    failed.append(
+                        f"[{COV_TYPE}] {name} vs {reference_name}:"
+                        f" LL disagreement = {inter_diff:.2e}"
+                    )
 
-        # Informational: show aligned means diff (not asserted)
-        cand_means = gmm.means_.cpu().numpy()
-        perm = _align_components(sk_means, cand_means)
-        aligned_means = cand_means[perm]
-        means_diff = np.max(np.abs(sk_means - aligned_means))
-        print(f"    means diff vs sklearn (informational): {means_diff:.2e}")
+            # Informational: aligned means diff vs sklearn
+            cand_means    = gmm.means_.cpu().numpy()
+            perm          = _align_components(sk_means, cand_means)
+            aligned_means = cand_means[perm]
+            means_diff    = np.max(np.abs(sk_means - aligned_means))
+            print(f"    means diff vs sklearn (informational): {means_diff:.2e}")
 
-    if failed:
-        for msg in failed:
-            print(f"  FAIL: {msg}")
-        raise AssertionError("End-to-end correctness failures:\n" + "\n".join(failed))
+            # Informational: L2 density error vs sklearn
+            p_torch = gmm.score_samples(X_t).exp().cpu().numpy()
+            p_sk    = np.exp(sk_gmm.score_samples(X_np))
+            l2_err  = np.sqrt(np.mean((p_torch - p_sk) ** 2))
+            print(f"    L2 density error vs sklearn (informational): {l2_err:.2e}")
 
-    print("\n+ End-to-end PASSED for all implementations\n")
+        if failed:
+            overall_failed.extend(failed)
+            for msg in failed:
+                print(f"  FAIL: {msg}")
+
+    if overall_failed:
+        raise AssertionError(
+            "End-to-end correctness failures:\n" + "\n".join(overall_failed)
+        )
+
+    print("\n+ End-to-end PASSED for all implementations and covariance types\n")
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -532,12 +534,93 @@ def test_cholesky_stability():
 
 
 # ───────────────────────────────────────────────────────────────────────────
+# Test 5: K=1 score_samples correctness — unique global optimum
+# ───────────────────────────────────────────────────────────────────────────
+
+def test_score_samples_k1():
+    """
+    With K=1, every E-step assigns responsibility 1 to the single component for
+    every data point (log_resp = 0 exactly), regardless of the current parameters.
+    The M-step therefore always produces the maximum likelihood Gaussian:
+      mean = sample mean,  cov = sample covariance + reg_covar
+    This is the unique global optimum, reached in a single EM iteration from any
+    initialization.
+
+    Both sklearn and _v1 must converge to the same solution, so their
+    score_samples values must agree to near machine precision (~1e-10).
+
+    This directly validates:
+      - score_samples is correctly implemented in _v1.
+      - EM converges to the right parameter values, not just satisfies invariants.
+      - The result is init-invariant (K=1 makes every init equivalent).
+    """
+    print("=" * 80)
+    print("TEST 5: K=1 score_samples correctness  (unique global optimum)")
+    print("=" * 80)
+
+    rng = np.random.RandomState(42)
+    N, D      = 500, 6
+    K         = 1
+    REG_COVAR = 1e-6
+
+    X_np = rng.randn(N, D).astype(np.float64)
+    X_t  = torch.from_numpy(X_np)
+
+    failed = []
+
+    print(f"\n  {'cov_type':<12} {'L2 density error':>18}  result")
+
+    for cov_type in ("spherical", "diag", "tied", "full"):
+        sk_gmm = SklearnGMM(
+            n_components=K,
+            covariance_type=cov_type,
+            reg_covar=REG_COVAR,
+            max_iter=10,     # K=1 always converges in a single M-step
+            tol=1e-12,
+            n_init=1,
+            random_state=42,
+        ).fit(X_np)
+
+        gmm = v1.TorchGaussianMixture(
+            n_components=K,
+            covariance_type=cov_type,
+            reg_covar=REG_COVAR,
+            max_iter=10,
+            tol=1e-12,
+            n_init=1,
+            init_params="random_from_data",
+            dtype=torch.float64,
+        ).fit(X_t)
+
+        p_sk  = np.exp(sk_gmm.score_samples(X_np))         # (N,)
+        p_v1  = gmm.score_samples(X_t).exp().cpu().numpy() # (N,)
+        l2_err = np.sqrt(np.mean((p_v1 - p_sk) ** 2))
+
+        tol = 1e-10
+        ok  = l2_err < tol
+        print(f"  {cov_type:<12} {l2_err:>18.2e}  {'ok' if ok else 'FAIL'}")
+
+        if not ok:
+            failed.append(
+                f"[{cov_type}] K=1 L2 density error = {l2_err:.2e} > {tol:.0e}"
+            )
+
+    if failed:
+        for msg in failed:
+            print(f"  FAIL: {msg}")
+        raise AssertionError("K=1 score_samples failures:\n" + "\n".join(failed))
+
+    print("\n+ K=1 score_samples PASSED for all covariance types\n")
+
+
+# ───────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     test_e_step_correctness()
     test_m_step_correctness()
     test_end_to_end()
     test_cholesky_stability()
+    test_score_samples_k1()
 
     print("=" * 80)
     print("ALL TESTS PASSED")
