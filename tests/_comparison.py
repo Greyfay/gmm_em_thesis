@@ -41,6 +41,7 @@ import implementation._v2_reduced_covariance_updates as v2r
 import implementation._v2_tiling as v2t
 
 torch.set_default_dtype(torch.float64)
+DEVICE = torch.device("cuda")
 
 # ───────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -133,16 +134,16 @@ def _run_e_step_test_for_cov_type(cov_type, label, lp_fn, estep_fn, compute_prec
     N, D, K = 200, 5, 3
 
     X_np     = rng.randn(N, D).astype(np.float64)
-    X_t      = torch.from_numpy(X_np)
+    X_t      = torch.from_numpy(X_np).to(DEVICE)
     means_np = rng.randn(K, D).astype(np.float64)
-    means_t  = torch.from_numpy(means_np)
+    means_t  = torch.from_numpy(means_np).to(DEVICE)
 
     # Random mixture weights
     weights_np = rng.dirichlet(np.ones(K))
-    weights_t  = torch.from_numpy(weights_np)
+    weights_t  = torch.from_numpy(weights_np).to(DEVICE)
 
     cov_np, prec_chol_np = _build_cov_and_prec_chol(rng, cov_type, K, D)
-    cov_t = torch.from_numpy(cov_np)
+    cov_t = torch.from_numpy(cov_np).to(DEVICE)
 
     # sklearn reference
     sk_log_prob    = _sk_estimate_log_gaussian_prob(X_np, means_np, prec_chol_np, cov_type)
@@ -200,11 +201,11 @@ def _run_m_step_test_for_cov_type(cov_type, label, mstep_fn):
     N, D, K = 100, 5, 3
 
     X_np = rng.randn(N, D).astype(np.float64)
-    X_t  = torch.from_numpy(X_np)
+    X_t  = torch.from_numpy(X_np).to(DEVICE)
 
     resp_np = rng.uniform(0, 1, (N, K)).astype(np.float64)
     resp_np /= resp_np.sum(axis=1, keepdims=True)
-    log_resp_t = torch.from_numpy(np.log(resp_np))
+    log_resp_t = torch.from_numpy(np.log(resp_np)).to(DEVICE)
 
     # sklearn M-step reference
     sk_norms, sk_means, sk_cov = _sk_estimate_gaussian_parameters(
@@ -213,16 +214,16 @@ def _run_m_step_test_for_cov_type(cov_type, label, mstep_fn):
     sk_weights = sk_norms / sk_norms.sum()
 
     # Dummy initial params for PyTorch — shapes must match cov_type
-    means0   = torch.from_numpy(rng.randn(K, D).astype(np.float64))
-    weights0 = torch.full((K,), 1.0 / K, dtype=torch.float64)
+    means0   = torch.from_numpy(rng.randn(K, D).astype(np.float64)).to(DEVICE)
+    weights0 = torch.full((K,), 1.0 / K, dtype=torch.float64, device=DEVICE)
     if cov_type == "spherical":
-        cov0 = torch.ones(K, dtype=torch.float64)
+        cov0 = torch.ones(K, dtype=torch.float64, device=DEVICE)
     elif cov_type == "diag":
-        cov0 = torch.ones(K, D, dtype=torch.float64)
+        cov0 = torch.ones(K, D, dtype=torch.float64, device=DEVICE)
     elif cov_type == "tied":
-        cov0 = torch.eye(D, dtype=torch.float64)
+        cov0 = torch.eye(D, dtype=torch.float64, device=DEVICE)
     else:  # full
-        cov0 = torch.eye(D, dtype=torch.float64).unsqueeze(0).expand(K, D, D).contiguous()
+        cov0 = torch.eye(D, dtype=torch.float64, device=DEVICE).unsqueeze(0).expand(K, D, D).contiguous()
 
     torch_means, torch_cov, torch_weights = mstep_fn(
         X_t, means0, cov0, weights0, log_resp_t, cov_type, reg_covar=1e-6
@@ -299,7 +300,7 @@ def test_end_to_end():
     TOL       = 1e-4
 
     X_np = np.random.randn(N, D).astype(np.float64)
-    X_t  = torch.from_numpy(X_np)
+    X_t  = torch.from_numpy(X_np).to(DEVICE)
 
     km = KMeans(n_clusters=K, n_init=1, random_state=SEED_E2E).fit(X_np)
     init_means_np = km.cluster_centers_.astype(np.float64)  # (K, D)
@@ -312,8 +313,8 @@ def test_end_to_end():
         print(f"  {'─' * 60}")
 
         init_prec_np = _sk_init_params_from_means(X_np, init_means_np, COV_TYPE, REG_COVAR)
-        init_means_t = torch.from_numpy(init_means_np)
-        init_prec_t  = torch.from_numpy(init_prec_np)
+        init_means_t = torch.from_numpy(init_means_np).to(DEVICE)
+        init_prec_t  = torch.from_numpy(init_prec_np).to(DEVICE)
 
         sk_gmm = SklearnGMM(
             n_components=K,
@@ -344,7 +345,7 @@ def test_end_to_end():
                 tol=TOL,
                 n_init=1,
                 init_params="kmeans",
-                device=None,
+                device=DEVICE,
                 dtype=torch.float64,
                 means_init=init_means_t.clone(),
                 precisions_init=init_prec_t.clone(),
@@ -484,7 +485,7 @@ def test_cholesky_stability():
 
     for N, D, K, reg_covar in configs:
         X_np = rng.randn(N, D).astype(np.float64)
-        X_t  = torch.from_numpy(X_np)
+        X_t  = torch.from_numpy(X_np).to(DEVICE)
 
         for label, GMM_cls in impls:
             try:
@@ -496,7 +497,7 @@ def test_cholesky_stability():
                     tol=1e-4,
                     n_init=1,
                     init_params="kmeans",
-                    device=None,
+                    device=DEVICE,
                     dtype=torch.float64,
                 ).fit(X_t)
 
@@ -564,7 +565,7 @@ def test_score_samples_k1():
     REG_COVAR = 1e-6
 
     X_np = rng.randn(N, D).astype(np.float64)
-    X_t  = torch.from_numpy(X_np)
+    X_t  = torch.from_numpy(X_np).to(DEVICE)
 
     failed = []
 
@@ -589,6 +590,7 @@ def test_score_samples_k1():
             tol=1e-12,
             n_init=1,
             init_params="random_from_data",
+            device=DEVICE,
             dtype=torch.float64,
         ).fit(X_t)
 
@@ -647,7 +649,7 @@ def test_aic_bic():
     rng_a = np.random.RandomState(42)
     N_a, D_a, K_a = 500, 6, 1
     X_np_a = rng_a.randn(N_a, D_a).astype(np.float64)
-    X_t_a  = torch.from_numpy(X_np_a)
+    X_t_a  = torch.from_numpy(X_np_a).to(DEVICE)
 
     for cov_type in ("spherical", "diag", "tied", "full"):
         sk_a = SklearnGMM(
@@ -658,13 +660,13 @@ def test_aic_bic():
         v0_a = v0.TorchGaussianMixture(
             n_components=K_a, covariance_type=cov_type, reg_covar=REG_COVAR,
             max_iter=10, tol=1e-12, n_init=1, init_params="random_from_data",
-            dtype=torch.float64,
+            device=DEVICE, dtype=torch.float64,
         ).fit(X_t_a)
 
         v1_a = v1.TorchGaussianMixture(
             n_components=K_a, covariance_type=cov_type, reg_covar=REG_COVAR,
             max_iter=10, tol=1e-12, n_init=1, init_params="random_from_data",
-            dtype=torch.float64,
+            device=DEVICE, dtype=torch.float64,
         ).fit(X_t_a)
 
         tol_a = 1e-4
@@ -695,7 +697,7 @@ def test_aic_bic():
     rng_b = np.random.RandomState(42)
     N_b, D_b, K_b = 300, 8, 4
     X_np_b = rng_b.randn(N_b, D_b).astype(np.float64)
-    X_t_b  = torch.from_numpy(X_np_b)
+    X_t_b  = torch.from_numpy(X_np_b).to(DEVICE)
 
     for cov_type in ("spherical", "diag", "tied", "full"):
         sk_b = SklearnGMM(
@@ -703,17 +705,17 @@ def test_aic_bic():
             max_iter=200, tol=1e-4, n_init=1, random_state=42,
         ).fit(X_np_b)
 
-        # Extract sklearn's fitted parameters as float64 torch tensors.
+        # Extract sklearn's fitted parameters as float64 torch tensors on DEVICE.
         # Covariance shapes match our storage format exactly:
         #   spherical (K,), diag (K,D), tied (D,D), full (K,D,D).
-        cov_t   = torch.from_numpy(np.asarray(sk_b.covariances_)).double()
-        w_t     = torch.from_numpy(sk_b.weights_).double()
-        means_t = torch.from_numpy(sk_b.means_).double()
+        cov_t   = torch.from_numpy(np.asarray(sk_b.covariances_)).double().to(DEVICE)
+        w_t     = torch.from_numpy(sk_b.weights_).double().to(DEVICE)
+        means_t = torch.from_numpy(sk_b.means_).double().to(DEVICE)
 
         # Inject into _v0_ref — no fit(), only _params needs to be set
         prec_chol_v0 = v0._compute_precisions_cholesky(cov_t, cov_type)
         v0_b = v0.TorchGaussianMixture(
-            n_components=K_b, covariance_type=cov_type, dtype=torch.float64,
+            n_components=K_b, covariance_type=cov_type, device=DEVICE, dtype=torch.float64,
         )
         v0_b._params = v0.GMMParams(
             weights=w_t, means=means_t, cov=cov_t,
@@ -723,7 +725,7 @@ def test_aic_bic():
         # Inject into _v1
         prec_chol_v1 = v1._compute_precisions_cholesky(cov_t, cov_type)
         v1_b = v1.TorchGaussianMixture(
-            n_components=K_b, covariance_type=cov_type, dtype=torch.float64,
+            n_components=K_b, covariance_type=cov_type, device=DEVICE, dtype=torch.float64,
         )
         v1_b._params = v1.GMMParams(
             weights=w_t, means=means_t, cov=cov_t,
