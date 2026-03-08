@@ -614,6 +614,166 @@ def test_score_samples_k1():
 
 
 # ───────────────────────────────────────────────────────────────────────────
+# Test 6: AIC/BIC correctness
+# ───────────────────────────────────────────────────────────────────────────
+
+def test_aic_bic():
+    """
+    Test 6: AIC/BIC correctness — two complementary strategies.
+
+    Part A (K=1, unique optimum): With K=1, all three implementations converge to
+    the same MLE Gaussian from any initialization (see test_score_samples_k1 for
+    the argument). Their AIC and BIC must therefore agree to near machine precision.
+    Tests the formula and all 4 covariance types.
+
+    Part B (parameter injection, K=4): sklearn's fitted parameters are extracted
+    and injected directly into _v0_ref and _v1 instances, bypassing EM entirely.
+    All three models share identical parameters, making AIC/BIC directly comparable
+    for K>1. Also validates _n_parameters for K=4, catching K-multiplier bugs (e.g.
+    full uses K*D*(D+1)/2 while tied uses D*(D+1)/2 — indistinguishable at K=1).
+    """
+    print("=" * 80)
+    print("TEST 6: AIC/BIC correctness")
+    print("=" * 80)
+
+    REG_COVAR = 1e-6
+    failed    = []
+
+    # ── Part A: K=1, unique global optimum ───────────────────────────────
+    print("\n  Part A — K=1 unique optimum")
+    print(f"  {'cov_type':<12} {'metric':>6} {'sklearn':>14}"
+          f" {'v0_ref diff':>14} {'v1 diff':>14}  result")
+
+    rng_a = np.random.RandomState(42)
+    N_a, D_a, K_a = 500, 6, 1
+    X_np_a = rng_a.randn(N_a, D_a).astype(np.float64)
+    X_t_a  = torch.from_numpy(X_np_a)
+
+    for cov_type in ("spherical", "diag", "tied", "full"):
+        sk_a = SklearnGMM(
+            n_components=K_a, covariance_type=cov_type, reg_covar=REG_COVAR,
+            max_iter=10, tol=1e-12, n_init=1, random_state=42,
+        ).fit(X_np_a)
+
+        v0_a = v0.TorchGaussianMixture(
+            n_components=K_a, covariance_type=cov_type, reg_covar=REG_COVAR,
+            max_iter=10, tol=1e-12, n_init=1, init_params="random_from_data",
+            dtype=torch.float64,
+        ).fit(X_t_a)
+
+        v1_a = v1.TorchGaussianMixture(
+            n_components=K_a, covariance_type=cov_type, reg_covar=REG_COVAR,
+            max_iter=10, tol=1e-12, n_init=1, init_params="random_from_data",
+            dtype=torch.float64,
+        ).fit(X_t_a)
+
+        tol_a = 1e-4
+        for metric, sk_val, v0_val, v1_val in [
+            ("AIC", sk_a.aic(X_np_a), v0_a.aic(X_t_a).item(), v1_a.aic(X_t_a).item()),
+            ("BIC", sk_a.bic(X_np_a), v0_a.bic(X_t_a).item(), v1_a.bic(X_t_a).item()),
+        ]:
+            v0_diff = abs(v0_val - sk_val)
+            v1_diff = abs(v1_val - sk_val)
+            ok = v0_diff < tol_a and v1_diff < tol_a
+            print(f"  {cov_type:<12} {metric:>6} {sk_val:>14.4f}"
+                  f" {v0_diff:>14.2e} {v1_diff:>14.2e}  {'ok' if ok else 'FAIL'}")
+            if not ok:
+                if v0_diff >= tol_a:
+                    failed.append(
+                        f"[A/{cov_type}] _v0_ref {metric} diff = {v0_diff:.2e} > {tol_a:.0e}"
+                    )
+                if v1_diff >= tol_a:
+                    failed.append(
+                        f"[A/{cov_type}] _v1 {metric} diff = {v1_diff:.2e} > {tol_a:.0e}"
+                    )
+
+    # ── Part B: Parameter injection, K=4 ─────────────────────────────────
+    print(f"\n  Part B — Parameter injection (K=4)")
+    print(f"  {'cov_type':<12} {'n_params':>8} {'metric':>6} {'sklearn':>14}"
+          f" {'v0_ref diff':>14} {'v1 diff':>14}  result")
+
+    rng_b = np.random.RandomState(42)
+    N_b, D_b, K_b = 300, 8, 4
+    X_np_b = rng_b.randn(N_b, D_b).astype(np.float64)
+    X_t_b  = torch.from_numpy(X_np_b)
+
+    for cov_type in ("spherical", "diag", "tied", "full"):
+        sk_b = SklearnGMM(
+            n_components=K_b, covariance_type=cov_type, reg_covar=REG_COVAR,
+            max_iter=200, tol=1e-4, n_init=1, random_state=42,
+        ).fit(X_np_b)
+
+        # Extract sklearn's fitted parameters as float64 torch tensors.
+        # Covariance shapes match our storage format exactly:
+        #   spherical (K,), diag (K,D), tied (D,D), full (K,D,D).
+        cov_t   = torch.from_numpy(np.asarray(sk_b.covariances_)).double()
+        w_t     = torch.from_numpy(sk_b.weights_).double()
+        means_t = torch.from_numpy(sk_b.means_).double()
+
+        # Inject into _v0_ref — no fit(), only _params needs to be set
+        prec_chol_v0 = v0._compute_precisions_cholesky(cov_t, cov_type)
+        v0_b = v0.TorchGaussianMixture(
+            n_components=K_b, covariance_type=cov_type, dtype=torch.float64,
+        )
+        v0_b._params = v0.GMMParams(
+            weights=w_t, means=means_t, cov=cov_t,
+            prec_chol=prec_chol_v0, cov_type=cov_type,
+        )
+
+        # Inject into _v1
+        prec_chol_v1 = v1._compute_precisions_cholesky(cov_t, cov_type)
+        v1_b = v1.TorchGaussianMixture(
+            n_components=K_b, covariance_type=cov_type, dtype=torch.float64,
+        )
+        v1_b._params = v1.GMMParams(
+            weights=w_t, means=means_t, cov=cov_t,
+            prec_chol=prec_chol_v1, cov_type=cov_type,
+        )
+
+        # n_parameters check — integer equality, no tolerance
+        sk_np = sk_b._n_parameters()
+        v0_np = v0_b._n_parameters(D_b)
+        v1_np = v1_b._n_parameters(D_b)
+        if v0_np != sk_np:
+            failed.append(
+                f"[B/{cov_type}] _v0_ref n_parameters={v0_np} != sklearn={sk_np}"
+            )
+        if v1_np != sk_np:
+            failed.append(
+                f"[B/{cov_type}] _v1 n_parameters={v1_np} != sklearn={sk_np}"
+            )
+
+        tol_b = 1e-6
+        for i, (metric, sk_val, v0_val, v1_val) in enumerate([
+            ("AIC", sk_b.aic(X_np_b), v0_b.aic(X_t_b).item(), v1_b.aic(X_t_b).item()),
+            ("BIC", sk_b.bic(X_np_b), v0_b.bic(X_t_b).item(), v1_b.bic(X_t_b).item()),
+        ]):
+            v0_diff = abs(v0_val - sk_val)
+            v1_diff = abs(v1_val - sk_val)
+            ok      = v0_diff < tol_b and v1_diff < tol_b
+            # Print n_params on first metric row only, blank on second
+            n_tag = f"{sk_np}" if i == 0 else ""
+            print(f"  {cov_type:<12} {n_tag:>8} {metric:>6} {sk_val:>14.4f}"
+                  f" {v0_diff:>14.2e} {v1_diff:>14.2e}  {'ok' if ok else 'FAIL'}")
+            if not ok:
+                if v0_diff >= tol_b:
+                    failed.append(
+                        f"[B/{cov_type}] _v0_ref {metric} diff = {v0_diff:.2e} > {tol_b:.0e}"
+                    )
+                if v1_diff >= tol_b:
+                    failed.append(
+                        f"[B/{cov_type}] _v1 {metric} diff = {v1_diff:.2e} > {tol_b:.0e}"
+                    )
+
+    if failed:
+        for msg in failed:
+            print(f"  FAIL: {msg}")
+        raise AssertionError("AIC/BIC failures:\n" + "\n".join(failed))
+
+    print("\n+ AIC/BIC PASSED for all covariance types\n")
+
+
+# ───────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     test_e_step_correctness()
@@ -621,6 +781,7 @@ if __name__ == "__main__":
     test_end_to_end()
     test_cholesky_stability()
     test_score_samples_k1()
+    test_aic_bic()
 
     print("=" * 80)
     print("ALL TESTS PASSED")
