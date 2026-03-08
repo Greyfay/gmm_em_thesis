@@ -569,7 +569,7 @@ def test_score_samples_k1():
 
     failed = []
 
-    print(f"\n  {'cov_type':<12} {'L2 density error':>18}  result")
+    print(f"\n  {'cov_type':<12} {'impl':<10} {'L2 density error':>18}  result")
 
     for cov_type in ("spherical", "diag", "tied", "full"):
         sk_gmm = SklearnGMM(
@@ -582,30 +582,33 @@ def test_score_samples_k1():
             random_state=42,
         ).fit(X_np)
 
-        gmm = v1.TorchGaussianMixture(
-            n_components=K,
-            covariance_type=cov_type,
-            reg_covar=REG_COVAR,
-            max_iter=10,
-            tol=1e-12,
-            n_init=1,
-            init_params="random_from_data",
-            device=DEVICE,
-            dtype=torch.float64,
-        ).fit(X_t)
+        p_sk = np.exp(sk_gmm.score_samples(X_np))  # (N,)
 
-        p_sk  = np.exp(sk_gmm.score_samples(X_np))         # (N,)
-        p_v1  = gmm.score_samples(X_t).exp().cpu().numpy() # (N,)
-        l2_err = np.sqrt(np.mean((p_v1 - p_sk) ** 2))
+        for label, GMM_cls in [("_v0_ref", v0.TorchGaussianMixture),
+                                ("_v1",     v1.TorchGaussianMixture)]:
+            gmm = GMM_cls(
+                n_components=K,
+                covariance_type=cov_type,
+                reg_covar=REG_COVAR,
+                max_iter=10,
+                tol=1e-12,
+                n_init=1,
+                init_params="random_from_data",
+                device=DEVICE,
+                dtype=torch.float64,
+            ).fit(X_t)
 
-        tol = 1e-10
-        ok  = l2_err < tol
-        print(f"  {cov_type:<12} {l2_err:>18.2e}  {'ok' if ok else 'FAIL'}")
+            p_impl = gmm.score_samples(X_t).exp().cpu().numpy()  # (N,)
+            l2_err = np.sqrt(np.mean((p_impl - p_sk) ** 2))
 
-        if not ok:
-            failed.append(
-                f"[{cov_type}] K=1 L2 density error = {l2_err:.2e} > {tol:.0e}"
-            )
+            tol = 1e-10
+            ok  = l2_err < tol
+            print(f"  {cov_type:<12} {label:<10} {l2_err:>18.2e}  {'ok' if ok else 'FAIL'}")
+
+            if not ok:
+                failed.append(
+                    f"[{cov_type}/{label}] K=1 L2 density error = {l2_err:.2e} > {tol:.0e}"
+                )
 
     if failed:
         for msg in failed:
@@ -776,6 +779,81 @@ def test_aic_bic():
 
 
 # ───────────────────────────────────────────────────────────────────────────
+# Test 7: predict_proba correctness via parameter injection
+# ───────────────────────────────────────────────────────────────────────────
+
+def test_predict_proba():
+    """
+    Test 7: predict_proba correctness — parameter injection (K=4).
+
+    Validates the full posterior computation code path through the fitted-model
+    public API, distinct from the unit-level E-step functions tested in Test 1.
+
+    Strategy: identical to Test 6 Part B. sklearn is fit normally; its parameters
+    are injected into _v0_ref and _v1 instances without calling fit(). With
+    identical parameters, the posterior responsibilities returned by predict_proba
+    must agree to near machine precision (~1e-10).
+
+    Covers all 4 covariance types and both v0_ref and v1.
+    """
+    print("=" * 80)
+    print("TEST 7: predict_proba correctness  (parameter injection, K=4)")
+    print("=" * 80)
+
+    REG_COVAR = 1e-6
+    N, D, K   = 300, 8, 4
+    failed    = []
+
+    rng    = np.random.RandomState(42)
+    X_np   = rng.randn(N, D).astype(np.float64)
+    X_t    = torch.from_numpy(X_np).to(DEVICE)
+
+    print(f"\n  {'cov_type':<12} {'impl':<10} {'max resp diff':>14}  result")
+
+    for cov_type in ("spherical", "diag", "tied", "full"):
+        sk_gmm = SklearnGMM(
+            n_components=K, covariance_type=cov_type, reg_covar=REG_COVAR,
+            max_iter=200, tol=1e-4, n_init=1, random_state=42,
+        ).fit(X_np)
+
+        # Extract sklearn's fitted parameters as float64 torch tensors on DEVICE
+        cov_t   = torch.from_numpy(np.asarray(sk_gmm.covariances_)).double().to(DEVICE)
+        w_t     = torch.from_numpy(sk_gmm.weights_).double().to(DEVICE)
+        means_t = torch.from_numpy(sk_gmm.means_).double().to(DEVICE)
+
+        sk_resp = sk_gmm.predict_proba(X_np)  # (N, K)
+
+        for label, impl in [("_v0_ref", v0), ("_v1", v1)]:
+            prec_chol = impl._compute_precisions_cholesky(cov_t, cov_type)
+            gmm = impl.TorchGaussianMixture(
+                n_components=K, covariance_type=cov_type, device=DEVICE, dtype=torch.float64,
+            )
+            gmm._params = impl.GMMParams(
+                weights=w_t, means=means_t, cov=cov_t,
+                prec_chol=prec_chol, cov_type=cov_type,
+            )
+
+            impl_resp = gmm.predict_proba(X_t).cpu().numpy()  # (N, K)
+            max_diff  = np.max(np.abs(impl_resp - sk_resp))
+
+            tol = 1e-10
+            ok  = max_diff < tol
+            print(f"  {cov_type:<12} {label:<10} {max_diff:>14.2e}  {'ok' if ok else 'FAIL'}")
+
+            if not ok:
+                failed.append(
+                    f"[{cov_type}/{label}] predict_proba max diff = {max_diff:.2e} > {tol:.0e}"
+                )
+
+    if failed:
+        for msg in failed:
+            print(f"  FAIL: {msg}")
+        raise AssertionError("predict_proba failures:\n" + "\n".join(failed))
+
+    print("\n+ predict_proba PASSED for all covariance types\n")
+
+
+# ───────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     test_e_step_correctness()
@@ -784,6 +862,7 @@ if __name__ == "__main__":
     test_cholesky_stability()
     test_score_samples_k1()
     test_aic_bic()
+    test_predict_proba()
 
     print("=" * 80)
     print("ALL TESTS PASSED")
